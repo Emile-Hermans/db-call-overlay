@@ -77,6 +77,7 @@ of any kind — that is not boilerplate here, it is the point.
 | [Node.js](https://nodejs.org) | 18 or newer |
 | WebView2 | ships with Windows 11 and with Edge; the app offers the download if missing |
 | Your app | .NET, using **Entity Framework Core** (or any ADO.NET provider, see *Raw SQL*) |
+| Browser extension | Optional. Chrome or Edge, and only to label flows by the button you clicked |
 
 ---
 
@@ -113,15 +114,64 @@ The app tells you which state you are in and what to do next:
 > only moment .NET allows it, and what makes the call-stack detail possible. A process that is
 > already running cannot be joined.
 
-### Group calls by the button you clicked
+### Optional: name the flows after the button you clicked
 
-Optional, but it turns *"some calls happened"* into *"the Recalculate button caused these"*.
+**It works without this.** The browser extension only improves the *labels*.
 
-`chrome://extensions` → **Developer mode** → **Load unpacked** → pick the `extension` folder.
+The recorder sees SQL and it sees HTTP requests. It cannot see which button you pressed —
+that only exists in the browser. So:
 
-It runs only on `localhost`, adds two headers to calls going to your API ports, and talks to
-nothing but the app on `127.0.0.1`. Without it, calls are grouped into bursts instead, and you
-can name a burst yourself with the **Mark** button.
+| | Flows are labelled |
+|---|---|
+| **Without the extension** | by endpoint, or as a burst: `Orders / Recalculate`, `Unlabelled burst` |
+| **With the extension** | by what you actually clicked: `Recalculate order` |
+
+Everything else — the calls, the findings, the call sites, projects, exports — is identical
+either way.
+
+**Install it in the browser you click your app in:**
+
+| Browser | Where |
+|---|---|
+| Chrome | `chrome://extensions` |
+| Edge | `edge://extensions` |
+
+→ turn on **Developer mode** → **Load unpacked** → pick the `extension` folder → refresh your
+app's tab.
+
+Both are tested; the extension uses nothing browser-specific.
+
+#### How a label is chosen
+
+First match wins, on the element you clicked:
+
+| | Source | Example |
+|---|---|---|
+| 1 | Visible text, up to 45 characters | `Recalculate order` |
+| 2 | `aria-label` or `title` | `Delete this row` |
+| 3 | `data-cy`, tidied up | `btn-save-lines` → `Save lines` |
+| 4 | Longer text, truncated | `Some very long caption…` |
+| 5 | An `mdi-*` icon class | `mdi-content-save` → `Content save` |
+
+Icon-only buttons are the weak spot — with no text they fall to a `data-cy` or an icon name.
+To get better labels, give those buttons an `aria-label` (which helps screen readers too) or a
+`data-cy` that reads like a phrase rather than an id.
+
+#### When there is nothing to click
+
+A flow started by a keyboard shortcut, a timer or a SignalR push produces no click, so no label.
+Use **Mark** in the toolbar: type a name, press it, do the thing, press **Stop**. Everything in
+between is filed under that name — which also works with no extension installed at all.
+
+#### What it does, and does not do
+
+- Adds three headers (`X-DbProbe-Action`, `-Label`, `-Kind`) to calls going to **your configured
+  API ports only** — see ⚙ Settings.
+- Sends the app one object per click: the label, the `data-cy`, and the page path.
+- Runs **only on `localhost` / `127.0.0.1`**; it cannot load on a real website.
+- Reads no response body, no cookies, no storage, no form values. The one response it reads is
+  the port list, from your own app.
+- Contacts nothing but `127.0.0.1`.
 
 ---
 
@@ -275,7 +325,7 @@ It is deliberately cautious:
 | `probe/` | The recorder: a .NET startup-hook assembly. Subscribes to the EF Core and ASP.NET `DiagnosticListener`s, capturing SQL, duration, rows and the application call stack, streamed as NDJSON over TCP. Dependency-free, never throws into the host. |
 | `server/` | Zero-dependency Node collector. `sql.mjs` shreds commands into statements, `analyze.mjs` is the rule engine, `store.mjs` groups per action, `index.mjs` serves the UI. |
 | `ui/` | The overlay page. |
-| `extension/` | Chrome MV3 extension. `inject.js` runs in the page world; `bridge.js` runs in the extension world and is the only side allowed to reach `127.0.0.1`. |
+| `extension/` | MV3 extension for Chrome or Edge, entirely optional. `inject.js` runs in the page world; `bridge.js` runs in the extension world and is the only side allowed to reach `127.0.0.1`. |
 | `data/` | Your projects and flows. |
 
 **There is no AI in the running tool, and no network access.** The findings come from counting
@@ -314,10 +364,10 @@ slower while you measure.
   list of recorded apps in the header.
 
 **Calls appear but grouped as "Unlabelled burst"**
-: The extension is not loaded, or the page was open before you loaded it. Load it and refresh.
+: That is only the label - the calls are still recorded correctly. Load the extension and refresh the tab, or name the flow yourself with **Mark**.
 
 **Chrome asks permission when the tab opens**
-: An old version of the extension. Press **Reload** on it in `chrome://extensions`.
+: An old version of the extension. Press **Reload** on it in `chrome://extensions` or `edge://extensions`.
 
 **Check by hand:** `http://127.0.0.1:8478/api/health` lists every recorder currently connected.
 
