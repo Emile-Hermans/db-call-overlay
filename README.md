@@ -133,7 +133,7 @@ One number cannot describe three different problems, so the header keeps them ap
 |---|---|---|
 | **calls** | Every SQL statement. A batched command counts once per statement inside it. | — |
 | **in-request** | Same query + same parameters repeated **inside one request**, plus N+1 loops collapsed to one query. | A change in one method. **The real target.** |
-| **dup. writes** | Rows written more than once in one action, including when the two writes are different statements. | A change in one flow. |
+| **dup. writes** | The same row written more than once **with the same columns** — the second write overwrites the first. Writes that set different columns are an un-batched save instead, counted in round-trips. | A change in one flow. |
 | **cross-request** | The same query in **different requests** of one action. Each request has its own `DbContext`, so loading a row once per request is normal, not waste. | Merging endpoints or a shared cache — a design decision. |
 | **could be** | `calls − in-request − dup. writes`. **Cross-request repeats are excluded.** | — |
 | **db time** | Sum of each command's duration. | — |
@@ -175,6 +175,7 @@ Colour is never the only signal — every row also carries the text tag.
 | `read-after-write` | med | A table is read again after being saved in the same action |
 | `cross-request` | med | The same rows loaded by two requests of one action |
 | `multi-savechanges` | med | `SaveChanges` ran more than once in one action |
+| `unbatched-save` | med | One row written by several separate flushes, each setting different columns — nothing is overwritten, the cost is round-trips |
 | `unfiltered-read` | med | `SELECT` with no `WHERE` and no paging |
 | `wide-select` | low | ≥ 30 columns projected — the whole entity materialised |
 
@@ -293,6 +294,7 @@ Read from the environment of the recorded process. All optional.
 | `DBPROBE_NS` | *(auto)* | Namespaces counted as application code. By default anything that is not framework code. |
 | `DBPROBE_STACK` | `full` | `full` (with file:line), `nofile` (faster), `off` |
 | `DBPROBE_PARAMS` | `on` | `off` to stop capturing parameter values |
+| `DBPROBE_PARAM_MAX` | `2000` | Parameters captured per command. It must cover a whole batch: a statement whose row cannot be identified is excluded from write analysis. |
 | `DBPROBE_RAWSQL` | `off` | `on` to also capture raw ADO.NET commands that bypass EF Core |
 | `DBPROBE_OFF` | — | `1` disables the recorder without unsetting anything |
 
@@ -372,6 +374,15 @@ Run `node tools/security-test.mjs` against a running collector to check all of t
 - **Call stacks stop at an await boundary.** You always get the synchronous chain that issued
   the query; ancestors above a resumed continuation can be missing. The HTTP handler is always
   known.
+- **Some call sites are withheld.** The stack is captured live, so a command issued after an
+  await can sit on a stack that still holds the resumed frames of the *previous* query — a
+  mirror image with the data access at the tail instead of the head. Those are detected and the
+  call site is left empty rather than naming a method that did not run the query.
+- **Row identity depends on captured parameters.** Statements whose parameters were not captured
+  are excluded from the duplicate-write counts rather than treated as writes to the same row.
+  Raise `DBPROBE_PARAM_MAX` if a very large batch is being truncated.
+- **A group's time is its share of each command**, since one batched command can feed several
+  groups. Group times therefore add up to the flow time rather than exceeding it.
 - **EF Core is captured by default.** Set `DBPROBE_RAWSQL=on` for raw `SqlCommand` use.
 - **Burst grouping is a heuristic** without the extension: calls within 1.5 s are one action.
 - **SignalR traffic is not tagged** — WebSocket frames cannot carry the action header.

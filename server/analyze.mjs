@@ -52,11 +52,12 @@ function pickOrigins(frameLists) {
   return fallback()
 }
 
-function callPathsOf(units) {
+function callPathsOf(units, plumbing = new Set()) {
   const paths = new Map()
 
   for (const u of units) {
-    const frames = u.call.stack ?? []
+    // Same trimming as the call site, so the displayed path cannot contradict it.
+    const { frames } = usableFrames(u.call.stack ?? [], plumbing)
     const key = frames.map((f) => `${f.m}:${f.l ?? ''}`).join(' < ') || '(no application frames)'
     let entry = paths.get(key)
     if (!entry) {
@@ -120,13 +121,47 @@ function plumbingMethods(units, minShapes = 3, nearLeafShare = 0.3) {
   return plumbing
 }
 
+/**
+ * Separates a real call path from an async continuation remnant.
+ *
+ * The stack is captured live, so when a command is issued after an await the
+ * physical stack can still hold the resumed frames of the operation that was
+ * awaited. Those frames belong to a *different*, already-finished query, and
+ * they read as a mirror image: the data-access frames sit at the tail instead of
+ * the head, with line numbers on the closing braces.
+ *
+ * A genuine path starts at the data access and ends at an entry point. So:
+ *  - data access at the head  -> real path (a remnant may still hang off the end)
+ *  - data access only further down -> what we can see is somebody else's tail
+ */
+function usableFrames(frames, plumbing) {
+  if (!frames?.length) return { frames: [], reliable: false }
+
+  const hasPlumbing = frames.some((f) => plumbing.has(f.m))
+
+  // No data-access layer in this codebase at all: take the stack at face value.
+  if (!hasPlumbing) return { frames, reliable: true }
+
+  if (!plumbing.has(frames[0].m)) {
+    return { frames: [], reliable: false }
+  }
+
+  // Nothing calls a controller from a repository, so trailing data-access frames
+  // are the start of a remnant. Drop them.
+  let end = frames.length
+  while (end > 1 && plumbing.has(frames[end - 1].m)) end--
+
+  return { frames: frames.slice(0, end), reliable: true }
+}
+
 function callsiteOf(call, plumbing = new Set()) {
-  const frames = call.stack ?? []
-  if (frames.length === 0) return null
+  const { frames, reliable } = usableFrames(call.stack ?? [], plumbing)
+
+  // Better to say nothing than to name a method that did not run this query.
+  if (!reliable || frames.length === 0) return null
 
   // Step out of the plumbing, but not indefinitely: past a few layers we would
-  // drift up to the controller, which says nothing about this query. If every
-  // frame looks like a helper, the innermost one is still the honest answer.
+  // drift up to the controller, which says nothing about this query.
   const MAX_SKIP = 5
   const frame = frames.slice(0, MAX_SKIP + 1).find((f) => !plumbing.has(f.m)) ?? frames[0]
 
@@ -204,7 +239,7 @@ function analyzeGroup(g, cfg) {
   const reqIds = new Set(g.units.map((u) => u.call.reqId).filter(Boolean))
   const avgParams = g.units.reduce((s, u) => s + u.params.length, 0) / g.count
   const isWrite = g.op === 'UPDATE' || g.op === 'INSERT' || g.op === 'DELETE' || g.op === 'MERGE'
-  const paths = callPathsOf(g.units)
+  const paths = callPathsOf(g.units, cfg.plumbing ?? new Set())
 
   /** e.g. "OrderService.Recalculate (50×) and OrderService.Persist (50×)" */
   const originsText = paths
@@ -297,9 +332,16 @@ function analyzeGroup(g, cfg) {
   }
 
   if (isWrite) {
-    const dupes = g.count - distinctRows
-    if (dupes > 0 && distinctRows > 0) {
-      const factor = (g.count / distinctRows).toFixed(1)
+    // Only statements whose row could actually be identified. A statement whose
+    // parameters were not captured tells us nothing, and counting it as another
+    // write to the same row invents redundancy that is not there.
+    const identified = g.units.filter((u) => u.rowKey !== null && u.rowKey !== undefined)
+    const knownRows = new Set(identified.map((u) => u.rowKey)).size
+    const unidentified = g.count - identified.length
+
+    const dupes = identified.length - knownRows
+    if (dupes > 0 && knownRows > 0) {
+      const factor = (identified.length / knownRows).toFixed(1)
       writes += dupes
       findings.push({
         code: 'duplicate-write',
@@ -307,10 +349,13 @@ function analyzeGroup(g, cfg) {
         bucket: 'writes',
         title: `Every row of ${g.table ?? 'this table'} is written ${factor}× `.trim(),
         detail:
-          `${g.count} ${g.op} statements touch only ${distinctRows} distinct row${distinctRows === 1 ? '' : 's'}. ` +
+          `${identified.length} ${g.op} statements touch only ${knownRows} distinct row${knownRows === 1 ? '' : 's'}. ` +
           (paths.length > 1
-            ? `The writes come from ${paths.length} different code paths: ${originsText}.`
-            : `${dupes} of them write values that were just written.`),
+            ? `The writes come from ${paths.length} different code paths: ${originsText}. `
+            : `${dupes} of them write values that were just written. `) +
+          (unidentified > 0
+            ? `${unidentified} further statement${unidentified === 1 ? '' : 's'} could not be checked — their parameters were not captured, so they are excluded from this count.`
+            : ''),
         fix:
           paths.length > 1
             ? `Two passes save the same rows. Recalculate everything first, then persist once — merge the save in ${paths[1].origin ?? 'the second path'} into the one in ${paths[0].origin ?? 'the first'}.`
@@ -420,10 +465,12 @@ const WRITE_OPS = ['UPDATE', 'INSERT', 'DELETE', 'MERGE']
  */
 function duplicateRowWrites(units, groups) {
   const perTable = new Map()
+  let roundTrips = 0
 
   for (const u of units) {
     if (!WRITE_OPS.includes(u.op) || !u.table) continue
-    if (!u.rowKey || u.rowKey === '(all rows)') continue
+    // null means the row could not be identified, not that it is the same row.
+    if (u.rowKey === null || u.rowKey === undefined || u.rowKey === '' || u.rowKey === '(all rows)') continue
 
     if (!perTable.has(u.table)) perTable.set(u.table, new Map())
     const rows = perTable.get(u.table)
@@ -446,11 +493,25 @@ function duplicateRowWrites(units, groups) {
   for (const [table, rows] of perTable) {
     let extra = 0
     let repeated = 0
+    // Same row, different columns: nothing is overwritten, each write persists
+    // something newly computed. The cost is the extra round-trip, not the write.
+    let unbatchedRows = 0
+    let unbatchedRoundTrips = 0
     const stacks = new Map() // stack signature -> { frames, count }
 
     for (const writes of rows.values()) {
       if (writes.length < 2) continue
-      extra += writes.length - 1
+
+      const columnSets = new Set(writes.map((w) => (w.setColumns ?? []).join(',')))
+      if (columnSets.size === writes.length && columnSets.size > 1) {
+        // Every write sets a different group of columns - not redundancy.
+        unbatchedRows++
+        unbatchedRoundTrips += new Set(writes.map((w) => w.call.id)).size - 1
+        continue
+      }
+
+      // Only the repeats that write the same columns are genuinely redundant.
+      extra += writes.length - columnSets.size
       repeated++
       for (const w of writes) {
         const frames = w.call.stack ?? []
@@ -468,6 +529,23 @@ function duplicateRowWrites(units, groups) {
       const name = labels[i] ?? 'unknown'
       origins.set(name, (origins.get(name) ?? 0) + e.count)
     })
+
+    if (unbatchedRows > 0 && unbatchedRoundTrips > 0) {
+      roundTrips += unbatchedRoundTrips
+      findings.push({
+        code: 'unbatched-save',
+        level: 'med',
+        bucket: null,
+        title: `${unbatchedRows} ${table} row${unbatchedRows === 1 ? '' : 's'} saved in several separate round-trips`,
+        detail:
+          'Each write sets different columns, so nothing is overwritten — these are separate ' +
+          'SaveChanges flushes persisting freshly calculated values one at a time.',
+        fix:
+          `Let the change tracker collect them and save once at the end of the flow. EF would ` +
+          `then issue a single UPDATE per row, saving about ${unbatchedRoundTrips} round-trip${unbatchedRoundTrips === 1 ? '' : 's'}.`,
+        avoidable: 0,
+      })
+    }
 
     const cross = Math.max(extra - (alreadyReported.get(table) ?? 0), 0)
     if (cross <= 0) continue
@@ -489,7 +567,7 @@ function duplicateRowWrites(units, groups) {
     })
   }
 
-  return { findings, avoidable }
+  return { findings, avoidable, roundTrips }
 }
 
 function readAfterWrite(units) {
@@ -565,10 +643,15 @@ export function analyzeAction(action, cfg = DEFAULTS) {
     g.units.push(u)
     g.count++
     g.apps.add(u.call.app)
+
+    // One batched command can feed several groups. Charging its full duration to
+    // each would make the group times sum to more than the flow actually took, so
+    // each group gets the share of the command its statements account for.
+    g.totalMs += (u.call.durationMs ?? 0) / (u.call.statements?.length || 1)
+
     if (!g._calls.has(u.call.id)) {
       g._calls.add(u.call.id)
       g.roundTrips++
-      g.totalMs += u.call.durationMs ?? 0
       g.maxMs = Math.max(g.maxMs, u.call.durationMs ?? 0)
       if (u.call.rowsRead > 0) g.rowsRead += u.call.rowsRead
       if (u.call.rowsAffected > 0) g.rowsAffected += u.call.rowsAffected
@@ -581,7 +664,7 @@ export function analyzeAction(action, cfg = DEFAULTS) {
   }
 
   const analyzed = [...groups.values()]
-    .map((g) => analyzeGroup({ ...g, apps: [...g.apps], _calls: undefined }, cfg))
+    .map((g) => analyzeGroup({ ...g, apps: [...g.apps], _calls: undefined }, { ...cfg, plumbing }))
     .sort((a, b) => b.avoidable - a.avoidable || b.count - a.count || a.firstTs - b.firstTs)
 
   const total = units.length
@@ -596,21 +679,33 @@ export function analyzeAction(action, cfg = DEFAULTS) {
   // requests is reported next to it, never folded in - it needs merged endpoints or
   // a shared cache, which is a different decision.
   const avoidable = inRequest + writes
-  const roundTripSavings = analyzed.reduce((s, g) => s + g.roundTripSavings, 0)
+  const roundTripSavings =
+    analyzed.reduce((s, g) => s + g.roundTripSavings, 0) + crossGroupWrites.roundTrips
   const totalMs = calls.reduce((s, c) => s + (c.durationMs ?? 0), 0)
 
   const actionFindings = [...crossGroupWrites.findings, ...readAfterWrite(units)]
   if ((action.saveChanges?.length ?? 0) >= 2) {
     const entities = action.saveChanges.reduce((s, e) => s + (e.entities ?? 0), 0)
-    actionFindings.push({
-      code: 'multi-savechanges',
-      level: 'med',
-      bucket: null,
-      title: `SaveChanges ran ${action.saveChanges.length}× (${entities} entities)`,
-      detail: 'Each SaveChanges is its own transaction and round-trip set.',
-      fix: 'Collect the changes and persist them in a single SaveChanges at the end of the flow where the flow allows it.',
-      avoidable: 0,
-    })
+
+    // A SaveChanges over an unchanged tracker issues nothing. Only the flushes
+    // that produced a command cost a transaction, so count those.
+    const flushes = new Set(
+      units.filter((u) => u.op !== 'SELECT').map((u) => u.call.id),
+    ).size
+
+    if (flushes >= 2) {
+      actionFindings.push({
+        code: 'multi-savechanges',
+        level: 'med',
+        bucket: null,
+        title: `SaveChanges ran ${action.saveChanges.length}× (${entities} entities), ${flushes} of them reached the database`,
+        detail:
+          `${action.saveChanges.length - flushes} produced no SQL — the change tracker had nothing to write. ` +
+          `The other ${flushes} are each their own transaction and round-trip set.`,
+        fix: 'Collect the changes and persist them in a single SaveChanges at the end of the flow where the flow allows it.',
+        avoidable: 0,
+      })
+    }
   }
 
   let level = 'ok'

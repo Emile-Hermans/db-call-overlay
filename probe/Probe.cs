@@ -26,6 +26,7 @@ namespace DbProbe
         private static bool _captureParams = true;
         private static bool _rawSql;
         private static int _sqlMaxChars = 20000;
+        private static int _paramMax = 2000;
         private static long _seq;
 
         public static void Start(string friendlyName)
@@ -35,6 +36,7 @@ namespace DbProbe
             _captureParams = Emitter.Env("DBPROBE_PARAMS", "on") != "off";
             _rawSql = Emitter.Env("DBPROBE_RAWSQL", "off") == "on";
             _sqlMaxChars = Emitter.EnvInt("DBPROBE_SQL_MAX", 20000);
+            _paramMax = Emitter.EnvInt("DBPROBE_PARAM_MAX", 2000);
 
             StackCapture.Configure();
 
@@ -546,7 +548,10 @@ namespace DbProbe
                 var sb = new StringBuilder(128);
                 sb.Append('[');
 
-                var max = Math.Min(command.Parameters.Count, 40);
+                // Must cover a whole batch. A cap that stops part-way leaves later
+                // statements with no values, and a write whose row cannot be
+                // identified is indistinguishable from one written twice.
+                var max = Math.Min(command.Parameters.Count, _paramMax);
                 for (var i = 0; i < max; i++)
                 {
                     var p = command.Parameters[i];

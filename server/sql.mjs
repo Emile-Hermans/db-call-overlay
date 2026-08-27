@@ -16,6 +16,9 @@ const SCAFFOLDING = [
   /^EXEC\s+sp_(reset_connection|executesql\s*$)/i,
 ]
 
+/** Separator for composite keys; never appears in SQL or a parameter value. */
+const SEP = String.fromCharCode(1)
+
 const OPS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE', 'EXEC', 'EXECUTE', 'CREATE', 'DROP', 'TRUNCATE']
 
 /** Replaces string literals with a placeholder so ';' splitting is safe. */
@@ -145,13 +148,23 @@ function resolveParams(stmt, commandParams) {
   return used
 }
 
-/** Identity of the row(s) a write targets: the parameters in its WHERE clause. */
-function rowKeyOf(stmt, op, resolved) {
+/**
+ * Identity of the row(s) a write targets: the parameter values in its WHERE.
+ *
+ * Returns null for "cannot tell", and that distinction matters. Parameter
+ * capture is bounded, so in a large batch the later statements arrive with no
+ * values at all. If those collapsed to one empty key they would look like
+ * repeated writes to a single row, and every one would be reported as redundant.
+ */
+function rowKeyOf(stmt, op, resolved, referencesParams) {
   if (op !== 'UPDATE' && op !== 'DELETE') {
-    return resolved.map((p) => p.v).join('')
+    if (referencesParams && resolved.length === 0) return null
+    return resolved.map((p) => p.v).join(SEP)
   }
+
   const where = stmt.search(/\bWHERE\b/i)
   if (where < 0) return '(all rows)'
+
   const tail = stmt.slice(where)
   const names = new Set()
   let m
@@ -159,10 +172,49 @@ function rowKeyOf(stmt, op, resolved) {
   while ((m = PARAM_TOKEN.exec(tail))) {
     if (!m[0].startsWith('@@')) names.add(m[0].replace(/^@+/, '').toLowerCase())
   }
-  return resolved
-    .filter((p) => names.has(String(p.n).replace(/^@+/, '').toLowerCase()))
-    .map((p) => p.v)
-    .join('')
+
+  const used = resolved.filter((p) => names.has(String(p.n).replace(/^@+/, '').toLowerCase()))
+
+  // The WHERE names parameters, but none of their values reached us.
+  if (names.size > 0 && used.length === 0) return null
+
+  return used.map((p) => p.v).join(SEP)
+}
+
+/**
+ * The columns an UPDATE assigns. Two writes to the same row are only redundant
+ * when they set the same columns; different columns means each is persisting
+ * something newly computed, which is an un-batched save, not a wasted write.
+ */
+function setColumnsOf(stmt, op) {
+  if (op !== 'UPDATE') return []
+
+  const setAt = stmt.search(/\bSET\b/i)
+  if (setAt < 0) return []
+
+  const stopAt = stmt.slice(setAt).search(/\b(WHERE|OUTPUT)\b/i)
+  const body = stopAt > 0 ? stmt.slice(setAt + 3, setAt + stopAt) : stmt.slice(setAt + 3)
+
+  const columns = []
+  let depth = 0
+  let current = ''
+  for (const ch of body) {
+    if (ch === '(') depth++
+    else if (ch === ')') depth--
+
+    if (ch === ',' && depth === 0) {
+      columns.push(current)
+      current = ''
+    } else {
+      current += ch
+    }
+  }
+  columns.push(current)
+
+  return columns
+    .map((c) => c.split('=')[0].trim().replace(/[[\]"`]/g, ''))
+    .filter(Boolean)
+    .sort()
 }
 
 /**
@@ -221,8 +273,9 @@ export function shred(rawSql, commandParams) {
       tables: allTables(stmt),
       width: projectionWidth(stmt, op),
       params: resolved,
-      paramSig: resolved.map((p) => `${p.v}`).join(''),
-      rowKey: rowKeyOf(stmt, op, resolved),
+      paramSig: resolved.map((p) => `${p.v}`).join(SEP),
+      rowKey: rowKeyOf(stmt, op, resolved, /@[A-Za-z_]/.test(stmt)),
+      setColumns: setColumnsOf(stmt, op),
       hasWhere: /\bWHERE\b/i.test(stmt),
       hasTop: /\b(TOP|OFFSET|FETCH\s+NEXT)\b/i.test(stmt),
     })
