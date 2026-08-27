@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <AssemblyName>DbCallOverlay</AssemblyName>
+    <RootNamespace>DbCallOverlay</RootNamespace>
+    <ApplicationIcon>appicon.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Product>DB Call Overlay</Product>
+    <AssemblyTitle>DB Call Overlay</AssemblyTitle>
+    <Company>DB Call Overlay</Company>
+    <Version>1.0.0</Version>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- The WebView2 package ships a WPF wrapper we never load; its WindowsBase
+         reference is the only source of MSB3277 here. -->
+    <MSBuildWarningsAsMessages>MSB3277</MSBuildWarningsAsMessages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+  </ItemGroup>
+
+  <!-- The collector and the UI ship next to the exe so the built app is self-contained. -->
+  <ItemGroup>
+    <Content Include="..\server\**\*.mjs" LinkBase="server" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\ui\**\*" LinkBase="ui" CopyToOutputDirectory="PreserveNewest" />
+    <!-- So the app can always point at a probe, even when run from its output folder. -->
+    <Content Include="..\probe\bin\Release\net8.0\DbProbe.dll" LinkBase="probe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\probe\bin\Release\net8.0\DbProbe.dll')" />
+    <Content Include="..\probe\bin\Release\net8.0\DbProbe.pdb" LinkBase="probe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\probe\bin\Release\net8.0\DbProbe.pdb')" />
+  </ItemGroup>
+
+</Project>

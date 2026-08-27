@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "DB Call Overlay — action tagger",
+  "version": "1.0.0",
+  "description": "Tags every API call with the button or field that triggered it, so the overlay can group database calls per user action.",
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*", "https://localhost/*"],
+  "content_scripts": [
+    {
+      "//": "Page world: wraps the app's own fetch/XHR and watches clicks.",
+      "matches": ["*://localhost/*", "*://127.0.0.1/*"],
+      "js": ["inject.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "//": "Extension world: reaches the app on 127.0.0.1, which the page may not.",
+      "matches": ["*://localhost/*", "*://127.0.0.1/*"],
+      "js": ["bridge.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ]
+}

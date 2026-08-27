@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>DbProbe</AssemblyName>
+    <RootNamespace>DbProbe</RootNamespace>
+    <LangVersion>12</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <!-- Startup hooks are loaded by path into the target app's default ALC.
+         Keep this assembly dependency-free: everything it uses lives in
+         Microsoft.NETCore.App (System.Diagnostics.DiagnosticSource included). -->
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+    <DebugType>portable</DebugType>
+    <NoWarn>$(NoWarn);CS0649</NoWarn>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,23 @@
+# build output
+bin/
+obj/
+
+# recordings — yours, and they can contain real data from whatever database you
+# were testing against. Delete this line if you want to share a set of flows.
+data/
+
+# generated
+desktop/appicon.ico
+tools/*.png
+tools/probetest/*.db
+tools/probetest/*.db-shm
+tools/probetest/*.db-wal
+*.tmp
+*.out.txt
+*.err.txt
+
+# editors
+.vs/
+.idea/
+*.user
+*.suo

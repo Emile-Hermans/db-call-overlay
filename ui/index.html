@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DB Call Overlay</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header id="bar">
+      <div class="drag">
+        <span class="rec" id="recDot" title="recording"></span>
+        <strong>DB Calls</strong>
+        <span class="muted" id="apps">waiting for a probe…</span>
+      </div>
+      <div class="tools">
+        <button id="projectBtn" class="project" title="Open, create or manage a project">
+          <span class="folder">&#128193;</span>
+          <span id="projectName">Scratch</span>
+          <span class="caret">&#9662;</span>
+        </button>
+        <button id="settingsBtn" class="glyph" title="Settings">&#9881;</button>
+        <input id="markLabel" placeholder="name this step…" spellcheck="false" />
+        <button id="markBtn" title="Group everything that happens next under this name">Mark</button>
+        <button id="recBtn" title="Pause / resume collecting">Pause</button>
+        <button id="clearBtn" title="Throw away everything collected so far">Clear</button>
+        <a id="exportBtn" href="/api/export" title="Download the full report as JSON">Export</a>
+        <span id="shellTools" hidden>
+          <button id="pinBtn" class="glyph" title="Always on top (Ctrl+T)">&#128204;</button>
+        </span>
+      </div>
+    </header>
+
+    <section id="totals">
+      <div class="tile" title="Every SQL statement recorded. A batched command counts once per statement inside it.">
+        <span class="k" id="tCalls">0</span><span class="v">calls</span>
+      </div>
+      <div
+        class="tile"
+        title="Same query with the same parameters repeated inside ONE request, plus N+1 loops collapsed to a single query. This is the real target — fixable in one method."
+      >
+        <span class="k warn" id="tInReq">0</span><span class="v">in-request</span>
+      </div>
+      <div
+        class="tile"
+        title="Rows written more than once in one action, even when the two writes are different statements."
+      >
+        <span class="k warn" id="tWrites">0</span><span class="v">dup. writes</span>
+      </div>
+      <div
+        class="tile"
+        title="The same query in DIFFERENT requests of one action. Each request has its own DbContext, so this is usually normal, not waste — removing it means merging endpoints or caching across requests. NOT counted in 'could be'."
+      >
+        <span class="k soft" id="tAcross">0</span><span class="v">cross-request</span>
+      </div>
+      <div class="tile" title="calls − in-request − duplicate writes. Cross-request repeats are deliberately excluded.">
+        <span class="k" id="tProjected">0</span><span class="v">could be</span>
+      </div>
+      <div class="tile" title="Total time the database spent on these calls (sum of each command's duration).">
+        <span class="k" id="tMs">0 ms</span><span class="v">db time</span>
+      </div>
+      <div class="tile lights">
+        <span class="light red"><i></i><b id="tRed">0</b></span>
+        <span class="light amber"><i></i><b id="tAmber">0</b></span>
+        <span class="light green"><i></i><b id="tGreen">0</b></span>
+      </div>
+    </section>
+
+    <div id="legend">
+      <span><i class="sw green"></i>optimised — nothing to remove</span>
+      <span><i class="sw amber"></i>review — slow, unfiltered or duplicated across endpoints</span>
+      <span><i class="sw red"></i>waste — repeated, N+1 or double-saved calls</span>
+    </div>
+
+    <main id="list"></main>
+
+    <section id="empty">
+      <!-- Step 1: recording has never been set up on this machine. -->
+      <div id="setupNeeded" hidden>
+        <h2><span class="dotwarn"></span>Recording is not switched on yet</h2>
+        <p>
+          DB Call Overlay needs permission to watch what your local APIs ask the database.
+          This is a one-time switch — it changes nothing in your own code.
+        </p>
+        <p class="cta">
+          <button id="setupInstall" class="big">Switch recording on</button>
+        </p>
+        <p class="sub">You can switch it back off at any time from the tray icon.</p>
+      </div>
+
+      <!-- Step 2a: Visual Studio is open but predates the switch. -->
+      <div id="setupVs" hidden>
+        <h2><span class="dotwarn"></span>Close Visual Studio and open it again</h2>
+        <p>
+          Recording is switched on, but Visual Studio was already open before that. It hands its
+          own settings to everything it runs, and it picked those up when it started — so
+          pressing F5 now would still not be recorded.
+        </p>
+        <p><b>Close Visual Studio, open it again, then press F5 as usual.</b> Once only.</p>
+        <p class="sub">Nothing else to do — this screen changes by itself when an API reports in.</p>
+      </div>
+
+      <!-- Step 2b: switched on, APIs running that predate it. -->
+      <div id="setupRestart" hidden>
+        <h2><span class="dotok"></span>Recording is switched on</h2>
+        <p>
+          It starts watching an API the moment that API starts. These are already running, so
+          they still need to be started once more:
+        </p>
+        <ul id="apiList"></ul>
+        <p class="cta" id="restartCta">
+          <button id="setupRestartBtn" class="big">Restart them for me</button>
+          <span class="sub">they were not started from Visual Studio, so this is safe</span>
+        </p>
+        <p class="sub" id="vsOwned" hidden>
+          Start them again from Visual Studio (Shift+F5, then F5). The app will not touch APIs
+          that Visual Studio is running — stopping them from here would end your debug session
+          and lose the settings Visual Studio passes to them.
+        </p>
+      </div>
+
+      <!-- Step 3: switched on, nothing running to restart. -->
+      <div id="setupReady" hidden>
+        <h2><span class="dotok"></span>Ready — start your APIs</h2>
+        <p>
+          Recording is switched on. Start your APIs the way you always do (F5 in Visual
+          Studio) and everything they do appears here automatically.
+        </p>
+      </div>
+
+      <!-- Opened in a plain browser tab, where we cannot change any settings. -->
+      <div id="setupBrowser" hidden>
+        <h2><span class="dotwarn"></span>No API is sending anything yet</h2>
+        <p>Open the <b>DB Call Overlay</b> app to switch recording on — it can set this up for you.</p>
+      </div>
+
+      <div id="noCalls" hidden>
+        <h2><span class="dotok"></span>Connected — waiting for a click</h2>
+        <p>
+          Recording <b id="connectedApps"></b>.
+          Click something in your app and it will appear here.
+        </p>
+      </div>
+    </section>
+
+    <div id="projectMenu" hidden>
+      <div class="menu-title">Projects</div>
+      <div id="projectList"></div>
+      <div class="menu-sep"></div>
+      <form id="newProjectForm">
+        <input id="newProjectName" placeholder="new project name…" spellcheck="false" maxlength="60" />
+        <button type="submit">Create</button>
+      </form>
+      <div class="menu-sep"></div>
+      <button class="menu-item" id="closeProject">Close project (record to Scratch)</button>
+      <button class="menu-item" id="renameProject">Rename current project…</button>
+      <button class="menu-item danger" id="deleteProject">Delete current project…</button>
+      <div class="menu-foot" id="dataRoot"></div>
+    </div>
+
+    <dialog id="noteDialog">
+      <form method="dialog">
+        <h3>What does this flow cover?</h3>
+        <p class="sub" id="noteFlowLabel"></p>
+        <textarea
+          id="noteText"
+          rows="9"
+          spellcheck="false"
+          placeholder="For example: recalculating a 50-line order — covers the double save on the lines table."
+        ></textarea>
+        <menu>
+          <button value="cancel" id="noteCancel">Cancel</button>
+          <button value="save" id="noteSave" class="primary">Save</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="settingsDialog">
+      <form method="dialog">
+        <h3>Settings</h3>
+        <label for="apiPorts">API ports to record</label>
+        <input id="apiPorts" spellcheck="false" placeholder="1337, 2337, 3337, 4337" />
+        <p class="sub">
+          Comma separated. Change these if you run the APIs on other ports — the browser
+          extension only tags calls going to them.
+        </p>
+        <p class="sub" id="collectorPorts"></p>
+        <menu>
+          <button value="cancel">Cancel</button>
+          <button value="save" id="settingsSave" class="primary">Save</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
