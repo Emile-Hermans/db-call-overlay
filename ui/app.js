@@ -213,6 +213,20 @@ function findingHtml(f) {
     </div>`
 }
 
+/**
+ * The call site shown is the first method above the data-access layer — the code
+ * you would change. Name the frame that literally ran the command too, so the
+ * shortcut is never mistaken for the whole truth.
+ */
+function siteTooltip(g) {
+  if (!g.callsite) return ''
+  const lines = [`${g.callsite.method}${g.callsite.file ? ` — ${g.callsite.file}${g.callsite.line ? ':' + g.callsite.line : ''}` : ''}`]
+  if (g.callsite.innermost && g.callsite.innermost !== g.callsite.method) {
+    lines.push(`issued through ${g.callsite.innermost} (shared data-access helper)`)
+  }
+  return lines.join('\n')
+}
+
 function groupRow(actionId, g) {
   const key = `${actionId}::${g.id}`
   const isOpen = openGroups.has(key)
@@ -237,7 +251,7 @@ function groupRow(actionId, g) {
         </span>
         <span class="count ${g.avoidable ? 'bad' : g.avoidableAcrossRequests ? 'soft' : ''}">&times;${g.count}</span>
         <span class="sub">${uniqueText}</span>
-        <span class="site" title="${esc(g.callsite?.file ?? '')}">${site}</span>
+        <span class="site" title="${esc(siteTooltip(g))}">${site}</span>
         <span class="ms">${ms(g.totalMs)}</span>
       </button>
       <div class="gdetail" ${isOpen ? '' : 'hidden'}>${isOpen ? groupBody(g) : ''}</div>
@@ -310,6 +324,14 @@ function groupBody(g) {
     .join('')
 
   return `
+    <div class="calltools">
+      <button data-act="copy-call" title="Copy this one call as text — ready to paste into a ticket or a pull request">
+        &#128203; Copy this call
+      </button>
+      <button data-act="save-call" title="Download just this call as JSON">
+        &#11015; JSON
+      </button>
+    </div>
     ${g.findings.map(findingHtml).join('')}
     ${pathsHtml}
     <div class="section-title">SQL</div>
@@ -366,9 +388,23 @@ list.addEventListener('click', (event) => {
   const tool = event.target.closest('[data-act]')
   if (tool) {
     event.stopPropagation()
-    const id = tool.closest('.action').dataset.id
-    if (tool.dataset.act === 'note') openNote(id)
-    else deleteFlow(id)
+    const actionId = tool.closest('.action').dataset.id
+    const groupId = tool.closest('.group')?.dataset.key
+
+    switch (tool.dataset.act) {
+      case 'note':
+        openNote(actionId)
+        break
+      case 'delete':
+        deleteFlow(actionId)
+        break
+      case 'copy-call':
+        copyCall(actionId, groupId, tool)
+        break
+      case 'save-call':
+        downloadCall(actionId, groupId)
+        break
+    }
     return
   }
 
@@ -457,6 +493,109 @@ noteText.addEventListener('keydown', (event) => {
     document.getElementById('noteSave').click()
   }
 })
+
+// ------------------------------------------------------- exporting one call
+
+function findGroup(actionId, groupId) {
+  const detail = details.get(actionId)
+  const group = detail?.groups.find((g) => g.id === groupId)
+  return group ? { detail, group } : null
+}
+
+/** One call as Markdown — the shape you would paste into a ticket or a PR. */
+function callAsText(detail, g) {
+  const site = g.callsite
+    ? `\`${g.callsite.method}\`${g.callsite.file ? ` — ${g.callsite.file}${g.callsite.line ? ':' + g.callsite.line : ''}` : ''}`
+    : '(no application frames captured)'
+
+  const out = [
+    `### ${g.op} ${g.table ?? '(no table parsed)'} — ${g.count}× in ${Math.round(g.totalMs)} ms`,
+    '',
+    `- **Action:** ${detail.label}`,
+    `- **Where:** ${site}`,
+    `- **Endpoint:** ${g.endpoints.join(', ') || '—'}`,
+    `- **App:** ${g.apps.join(', ') || '—'}`,
+    `- **Executions:** ${g.count} statement${g.count === 1 ? '' : 's'} in ${g.roundTrips} round-trip${g.roundTrips === 1 ? '' : 's'}` +
+      (g.op === 'SELECT' ? `, ${g.distinctParams} distinct parameter set${g.distinctParams === 1 ? '' : 's'}` : `, ${g.distinctRows} distinct row${g.distinctRows === 1 ? '' : 's'}`),
+  ]
+
+  if (g.findings.length) {
+    out.push('', '#### Findings')
+    for (const f of g.findings) {
+      const saving = f.avoidable ? ` (${f.bucket === 'across' ? '~' : '-'}${f.avoidable} calls)` : ''
+      out.push('', `**${f.title}**${saving}`, f.detail)
+      if (f.fix) out.push(`*Fix:* ${f.fix}`)
+    }
+  }
+
+  if (g.callPaths?.length) {
+    out.push('', `#### Called from ${g.callPaths.length === 1 ? '' : `(${g.callPaths.length} different paths)`}`.trim())
+    for (const p of g.callPaths) {
+      out.push('', `${p.count}× via **${p.origin ?? 'unknown'}**`)
+      ;[...p.frames].reverse().forEach((f, i) => {
+        out.push(`${i + 1}. \`${f.m}\`${f.f ? ` — ${f.f}${f.l ? ':' + f.l : ''}` : ''}`)
+      })
+    }
+  }
+
+  out.push('', '#### SQL', '```sql', g.sampleSql ?? '', '```')
+
+  const shown = g.executions.slice(0, 25)
+  out.push('', `#### Executions${g.count > shown.length ? ` (first ${shown.length} of ${g.count})` : ''}`, '')
+  out.push('| # | at | took | rows | from | parameters |', '|---|---|---|---|---|---|')
+  shown.forEach((e, i) => {
+    const rows = g.op === 'SELECT' ? e.rowsRead : e.rowsAffected
+    out.push(
+      `| ${i + 1} | ${clock(e.ts)} | ${e.durationMs ? Math.round(e.durationMs) + ' ms' : '—'} ` +
+        `| ${rows > 0 ? (g.op !== 'SELECT' && e.rowsAffectedDerived ? '≈' : '') + rows : '—'} ` +
+        `| ${e.origin ?? e.handler ?? ''} | ${(e.params ?? []).map((p) => `${p.n}=${p.v}`).join(', ') || '—'} |`,
+    )
+  })
+
+  out.push('', `_Recorded by DB Call Overlay on ${new Date(detail.startedAt).toLocaleString()}._`)
+  return out.join('\n')
+}
+
+async function copyCall(actionId, groupId, button) {
+  const found = findGroup(actionId, groupId)
+  if (!found) return
+
+  const label = button.innerHTML
+  try {
+    await navigator.clipboard.writeText(callAsText(found.detail, found.group))
+    button.innerHTML = '&#10003; Copied'
+  } catch {
+    button.innerHTML = 'Could not copy'
+  }
+  setTimeout(() => (button.innerHTML = label), 1800)
+}
+
+function downloadCall(actionId, groupId) {
+  const found = findGroup(actionId, groupId)
+  if (!found) return
+  const { detail, group } = found
+
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    exportedBy: 'DB Call Overlay',
+    action: {
+      id: detail.id,
+      label: detail.label,
+      startedAt: detail.startedAt,
+      apps: detail.apps,
+      endpoints: detail.endpoints,
+    },
+    call: group,
+  }
+
+  const name = `${group.op}-${group.table ?? 'call'}-${Date.now()}.json`.replace(/[^\w.-]+/g, '-')
+  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }))
+  const link = Object.assign(document.createElement('a'), { href: url, download: name })
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
 
 async function deleteFlow(id) {
   const item = state?.items.find((i) => i.id === id)

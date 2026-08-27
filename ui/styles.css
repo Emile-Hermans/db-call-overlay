@@ -973,6 +973,29 @@ dialog menu button.primary {
   border-top: 1px solid var(--line);
 }
 
+.calltools {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin: 8px 0 2px;
+}
+
+.calltools button {
+  background: var(--bg3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.calltools button:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
 .section-title {
   font-size: 10px;
   letter-spacing: 0.08em;

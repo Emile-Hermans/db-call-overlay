@@ -403,9 +403,42 @@ export class Store {
     return action
   }
 
+  /**
+   * Turns an endpoint into something readable.
+   *   OrdersController.Recalculate            -> Orders / Recalculate
+   *   /api/Orders/Recalculate/<guid>/<guid>/  -> Orders / Recalculate
+   * Route values (ids, guids, flags) are dropped: they identify the row that was
+   * clicked, not the thing that was done, and they make every label unreadable.
+   */
+  prettyEndpoint(handler, path) {
+    if (handler) {
+      return handler
+        .split('.')
+        .map((part) => part.replace(/Controller$/, ''))
+        .filter(Boolean)
+        .join(' / ')
+    }
+
+    if (!path) return null
+
+    const isRouteValue = (segment) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(segment) || // guid
+      /^\d+$/.test(segment) || // numeric id
+      /^(true|false)$/i.test(segment) || // flag
+      /^[0-9a-f]{16,}$/i.test(segment) // opaque hex id
+
+    const parts = path
+      .split('/')
+      .filter(Boolean)
+      .filter((segment, index) => !(index === 0 && /^api$/i.test(segment)))
+      .filter((segment) => !isRouteValue(segment))
+
+    return parts.length ? parts.join(' / ') : path
+  }
+
   nameAuto(action, event) {
     if (action.explicit) return
-    const name = event.handler || event.path
+    const name = this.prettyEndpoint(event.handler, event.path)
     if (!name) return
     if (action.label === 'Unlabelled burst') {
       action.label = name

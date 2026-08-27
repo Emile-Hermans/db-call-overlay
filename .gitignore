@@ -6,6 +6,14 @@ obj/
 # were testing against. Delete this line if you want to share a set of flows.
 data/
 
+# exported reports, wherever they land — same reason
+db-calls-*.json
+*.export.json
+
+# local working notes; may reference the private application this is tested on
+CLAUDE.md
+*.local.md
+
 # generated
 desktop/appicon.ico
 tools/*.png
