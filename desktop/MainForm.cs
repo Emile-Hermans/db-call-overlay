@@ -257,6 +257,85 @@ internal sealed class MainForm : Form
             case "setup-refresh":
                 PostShellState();
                 break;
+            case "update-check":
+                _ = RunUpdateAsync(apply: false);
+                break;
+            case "update-apply":
+                _ = RunUpdateAsync(apply: true);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Talking to a remote takes seconds, so it happens off the UI thread and the
+    /// result is posted back to the page when it arrives.
+    /// </summary>
+    private async Task RunUpdateAsync(bool apply)
+    {
+        var root = _collector.ToolFolder();
+        var exe = Application.ExecutablePath;
+
+        Post(new { type = "update", state = "busy", message = apply ? "Updating…" : "Checking…" });
+
+        var result = await Task.Run(() =>
+        {
+            if (!apply)
+            {
+                var status = Updater.Check(root);
+                return new
+                {
+                    type = "update",
+                    state = status.Problem is not null ? "problem" : status.Available ? "available" : "current",
+                    message = status.Problem
+                        ?? (status.Available
+                            ? $"{status.Behind} update{(status.Behind == 1 ? "" : "s")} available."
+                            : "You have the latest version."),
+                    current = status.Current,
+                    currentDate = status.CurrentDate,
+                    changes = status.Changes,
+                    dirty = status.HasLocalChanges,
+                    canApply = status.Available && !status.HasLocalChanges && status.Problem is null,
+                };
+            }
+
+            var (ok, message) = Updater.Apply(root, exe);
+            return new
+            {
+                type = "update",
+                state = ok ? "applied" : "problem",
+                message,
+                current = (string?)null,
+                currentDate = (string?)null,
+                changes = Array.Empty<string>(),
+                dirty = false,
+                canApply = false,
+            };
+        });
+
+        Post(result);
+
+        if (apply && result.state == "applied")
+        {
+            // The rebuild script is waiting for this process to go away.
+            await Task.Delay(1200);
+            _reallyClosing = true;
+            Close();
+        }
+    }
+
+    private void Post(object payload)
+    {
+        try
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(() => Post(payload));
+                return;
+            }
+            _web.CoreWebView2?.PostWebMessageAsJson(JsonSerializer.Serialize(payload));
+        }
+        catch
+        {
         }
     }
 

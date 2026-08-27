@@ -10,6 +10,11 @@ let state = null
 let repoRoot = null
 let setup = null // recording setup status, pushed by the desktop shell
 
+// The desktop shell, when the page is hosted by it rather than a browser tab.
+// Declared here because module-level code further down reads it.
+const shell = window.chrome?.webview ?? null
+const send = (type) => shell?.postMessage({ type })
+
 // ------------------------------------------------------------------ helpers
 
 const esc = (s) =>
@@ -758,6 +763,41 @@ document.getElementById('settingsBtn').addEventListener('click', async () => {
   settingsDialog.showModal()
 })
 
+// ------------------------------------------------------------------ updates
+
+// Only the desktop shell can run git and rebuild, so this is hidden in a browser.
+const updateBox = document.getElementById('updateBox')
+const updateMessage = document.getElementById('updateMessage')
+const updateChanges = document.getElementById('updateChanges')
+const updateApply = document.getElementById('updateApply')
+
+function paintUpdate(data) {
+  updateMessage.textContent = data.message ?? ''
+  updateMessage.className = 'sub' + (data.state === 'problem' ? ' bad' : data.state === 'available' ? ' good' : '')
+
+  if (data.current) {
+    document.getElementById('updateVersion').textContent =
+      `${data.current}${data.currentDate ? ` · ${data.currentDate}` : ''}${data.dirty ? ' · local changes' : ''}`
+  }
+
+  updateApply.hidden = !data.canApply
+  document.getElementById('updateCheck').disabled = data.state === 'busy'
+
+  const changes = data.changes ?? []
+  updateChanges.hidden = changes.length === 0
+  updateChanges.innerHTML = changes.map((c) => `<li>${esc(c)}</li>`).join('')
+}
+
+if (shell) {
+  updateBox.hidden = false
+  document.getElementById('updateCheck').addEventListener('click', () => send('update-check'))
+  updateApply.addEventListener('click', () => {
+    if (confirm('Update to the latest version?\n\nThe app will rebuild and restart. Your projects and recordings are not touched.')) {
+      send('update-apply')
+    }
+  })
+}
+
 settingsDialog.addEventListener('close', async () => {
   if (settingsDialog.returnValue !== 'save') return
   const apiPorts = document
@@ -772,8 +812,6 @@ settingsDialog.addEventListener('close', async () => {
 // -------------------------------------------------------------- native shell
 
 // Only present when the page is hosted by the desktop app, not in a browser.
-const shell = window.chrome?.webview ?? null
-const send = (type) => shell?.postMessage({ type })
 
 if (shell) {
   // The window's own buttons handle minimise/close; only the pin is ours.
@@ -782,7 +820,9 @@ if (shell) {
 
   shell.addEventListener('message', (event) => {
     const data = event.data
+    if (data?.type === 'update') return paintUpdate(data)
     if (data?.type !== 'shell') return
+
     document.getElementById('pinBtn').classList.toggle('on', Boolean(data.pinned))
     setup = data.setup ?? null
     if (state) render()

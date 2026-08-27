@@ -237,6 +237,22 @@ The app's own ports (8478 window, 8477 recorder) live in
 `%LOCALAPPDATA%\DbCallOverlay\settings.json`. Changing the window port also means changing
 `COLLECTOR_ORIGIN` at the top of `extension/bridge.js`.
 
+### Updating
+
+Settings also shows which version you are on and a **Check for updates** button. If there is a
+newer version it lists what changed; **Update now** pulls it, rebuilds, and restarts the app.
+
+It is deliberately cautious:
+
+- **Fast-forward only.** No merges, no rebases, no conflicts to resolve.
+- **It refuses if you have local changes**, and says so instead of overwriting them. Commit or
+  discard first.
+- **Your recordings are untouched** — `data/` is not tracked by git.
+- The rebuild happens after the app exits, because a running app cannot replace its own
+  executable. If the rebuild fails you get a message telling you to run `Install.cmd`.
+- If the folder was not cloned with git, or git is not installed, it says so rather than
+  pretending it can update.
+
 ---
 
 ## How it works

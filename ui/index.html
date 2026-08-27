@@ -185,6 +185,18 @@
           extension only tags calls going to them.
         </p>
         <p class="sub" id="collectorPorts"></p>
+
+        <div id="updateBox" hidden>
+          <label>Version</label>
+          <div class="updaterow">
+            <span class="sub" id="updateVersion">—</span>
+            <button type="button" id="updateCheck">Check for updates</button>
+            <button type="button" id="updateApply" class="primary" hidden>Update now</button>
+          </div>
+          <p class="sub" id="updateMessage"></p>
+          <ul class="sub" id="updateChanges" hidden></ul>
+        </div>
+
         <menu>
           <button value="cancel">Cancel</button>
           <button value="save" id="settingsSave" class="primary">Save</button>

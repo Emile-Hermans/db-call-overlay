@@ -189,6 +189,9 @@ internal sealed class Collector : IDisposable
         return File.Exists(bundled) ? bundled : null;
     }
 
+    /// <summary>The tool folder, which is also the git checkout when there is one.</summary>
+    public string? ToolFolder() => ToolRoot();
+
     /// <summary>The DbCallOverlay folder itself, identified by build.ps1 sitting in it.</summary>
     private static string? ToolRoot()
     {

@@ -1097,3 +1097,65 @@ table.exec td.p {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* ---------------------------------------------------------------- updates */
+
+#updateBox[hidden] {
+  display: none;
+}
+
+.updaterow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.updaterow .sub {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.updaterow button {
+  background: var(--bg3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--fg);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+.updaterow button:hover:not(:disabled) {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.updaterow button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.updaterow button.primary {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+#updateMessage.good {
+  color: var(--green);
+}
+
+#updateMessage.bad {
+  color: var(--red);
+}
+
+#updateChanges {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  line-height: 1.6;
+}
+
+#updateChanges[hidden] {
+  display: none;
+}
