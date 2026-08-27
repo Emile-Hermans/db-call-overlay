@@ -376,12 +376,12 @@ dialog menu button.primary {
   padding: 4px 6px;
   cursor: pointer;
   filter: grayscale(1);
-  opacity: 0.55;
+  opacity: 0.8;
 }
 
 .action:hover .rowtools button,
 .group:hover .rowtools button {
-  opacity: 0.9;
+  opacity: 1;
 }
 
 .rowtools button:hover {
@@ -698,7 +698,7 @@ dialog menu button.primary {
 
 .arow {
   display: grid;
-  grid-template-columns: 14px 62px minmax(110px, 1.4fr) minmax(80px, 1fr) 96px 126px 58px 62px;
+  grid-template-columns: 14px 62px minmax(110px, 1.4fr) minmax(74px, 1fr) 92px 122px 56px 92px;
   align-items: center;
   gap: 9px;
   width: 100%;

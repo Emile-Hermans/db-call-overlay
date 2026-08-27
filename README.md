@@ -188,16 +188,27 @@ The data-access layer is worked out from the recording itself, not from a list o
 method used for many different queries that is almost always one of the innermost frames is
 infrastructure. Nothing to configure, whatever your codebase looks like.
 
-### Handing one call to someone else
+### Handing one finding to someone else
 
-Every query-group row has two buttons, and neither needs the row opened:
+Nothing here needs a row opened first.
+
+On a **flow** row:
+
+| | |
+|---|---|
+| ✏️ / 📝 | Write what the flow covers |
+| ⬇ | **Export this flow** — every call in it — as JSON |
+| 🗑️ | Delete the flow |
+
+On a **query-group** row:
 
 | | |
 |---|---|
 | 📋 | **Copy this call** as Markdown — the finding, the fix, the call paths with `file:line`, the SQL and the executions table. Paste straight into a ticket or a pull request. |
-| ⬇ | Download **that one call** as JSON. |
+| ⬇ | Download **that one call** as JSON |
 
-**Export** in the toolbar still gives you the whole session.
+**Export** in the toolbar still gives you the whole session — three scopes in all: one call, one
+flow, everything.
 
 ---
 

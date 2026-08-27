@@ -100,6 +100,7 @@ function actionRow(a) {
           <button class="note ${a.note ? 'has-note' : ''}" data-act="note" title="${esc(noteTitle)}">
             ${a.note ? '&#128221;' : '&#9998;'}
           </button>
+          <button data-act="export-flow" title="Export this whole flow — every call in it — as JSON">&#11015;</button>
           <button class="del" data-act="delete" title="Delete this flow">&#128465;</button>
         </span>
       </div>
@@ -405,6 +406,9 @@ list.addEventListener('click', (event) => {
       case 'save-call':
         downloadCall(actionId, groupId)
         break
+      case 'export-flow':
+        exportFlow(actionId)
+        break
     }
     return
   }
@@ -573,6 +577,33 @@ async function copyCall(actionId, groupId, button) {
   setTimeout(() => (button.innerHTML = label), 1800)
 }
 
+/** Shared by both export buttons so a file always lands the same way. */
+function downloadJson(name, payload) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }))
+  const link = Object.assign(document.createElement('a'), { href: url, download: name.replace(/[^\w.-]+/g, '-') })
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
+/** The whole flow — every call in it — from the row, without opening it. */
+async function exportFlow(actionId) {
+  let detail = details.get(actionId)
+  if (!detail) {
+    const res = await fetch(`/api/action/${encodeURIComponent(actionId)}`)
+    if (!res.ok) return
+    detail = await res.json()
+    details.set(actionId, detail)
+  }
+
+  downloadJson(`flow-${detail.label}-${Date.now()}.json`, {
+    exportedAt: new Date().toISOString(),
+    exportedBy: 'DB Call Overlay',
+    flow: detail,
+  })
+}
+
 function downloadCall(actionId, groupId) {
   const found = findGroup(actionId, groupId)
   if (!found) return
@@ -591,13 +622,7 @@ function downloadCall(actionId, groupId) {
     call: group,
   }
 
-  const name = `${group.op}-${group.table ?? 'call'}-${Date.now()}.json`.replace(/[^\w.-]+/g, '-')
-  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }))
-  const link = Object.assign(document.createElement('a'), { href: url, download: name })
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-  URL.revokeObjectURL(url)
+  downloadJson(`${group.op}-${group.table ?? 'call'}-${Date.now()}.json`, payload)
 }
 
 async function deleteFlow(id) {
