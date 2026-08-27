@@ -321,6 +321,45 @@ slower while you measure.
 
 ---
 
+## Security
+
+This is a local development tool, and it holds sensitive material: recorded SQL includes the
+**parameter values** of every query, which is real data from whatever database you pointed it at.
+
+**What it does**
+
+- Both servers bind to `127.0.0.1` only — the UI on 8478, the recorder feed on 8477. Nothing is
+  reachable from the network.
+- **Recordings cannot be read cross-origin.** `/api/state`, `/api/stream`, `/api/action/*` and
+  `/api/export` send no `Access-Control-Allow-Origin`, so a web page you happen to have open
+  cannot fetch your recording.
+- **Anything that changes state requires same-origin.** Clearing a session, deleting a project
+  or a flow, and writing settings are rejected with 403 when the request comes from another
+  origin, which closes the obvious CSRF.
+- Exactly two endpoints are open cross-origin, because the browser extension needs them:
+  `GET /api/config` (the port list) and `POST /api/action` (the label of a clicked control).
+  Neither can read a recording.
+- The static file server refuses to serve anything outside `ui/`, and deleting a project refuses
+  any path outside `data/`. Both are covered by `tools/security-test.mjs`.
+- The recorder is **read-only towards your database**: it observes diagnostic events and never
+  issues SQL. The app never opens a database connection.
+- No network access, no telemetry, no account, no API key.
+
+**What you are trusting**
+
+- While recording is switched on, `DOTNET_STARTUP_HOOKS` points every .NET process you start at
+  `DbProbe.dll`. Anyone who can write to that file gets code execution in those processes — but
+  anyone who can write there has already won. `Uninstall.cmd` removes the setting.
+- The recorder feed on 8477 accepts anything a local process sends it, so another program on
+  your machine could inject fake entries. It cannot read anything back.
+- **`data/` holds real query parameters.** It is in `.gitignore`; think before sharing it.
+  `DBPROBE_PARAMS=off` records without values.
+- The update button runs `git merge --ff-only` against whatever `origin` your clone points at.
+
+Run `node tools/security-test.mjs` against a running collector to check all of this yourself.
+
+---
+
 ## Known limits
 
 - **Row counts for reads** are `DbDataReader.Read()` calls — one more than the row count when a

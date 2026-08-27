@@ -108,19 +108,47 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
 }
 
-function send(res, status, body, type = 'application/json; charset=utf-8') {
-  res.writeHead(status, {
+/**
+ * Recorded SQL contains parameter values - real data from whatever database was
+ * being used. It must not be readable by any web page that happens to be open,
+ * so cross-origin access is granted per endpoint rather than globally.
+ *
+ * Only two endpoints need it: the browser extension asks for the port list and
+ * posts the label of the control that was clicked. Neither reveals a recording.
+ */
+const PUBLIC_ENDPOINTS = new Set(['/api/config', '/api/action'])
+
+const SELF_ORIGINS = new Set([
+  `http://127.0.0.1:${HTTP_PORT}`,
+  `http://localhost:${HTTP_PORT}`,
+])
+
+/** True when the request came from the overlay itself, or from no page at all. */
+function isSameOrigin(req) {
+  const origin = req.headers.origin
+  return !origin || SELF_ORIGINS.has(origin)
+}
+
+function send(res, status, body, type = 'application/json; charset=utf-8', cors = false) {
+  const headers = {
     'Content-Type': type,
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
     'Cache-Control': 'no-store',
-  })
+    // A page must not be able to guess at these being HTML and framing them.
+    'X-Content-Type-Options': 'nosniff',
+  }
+
+  if (cors) {
+    headers['Access-Control-Allow-Origin'] = '*'
+    headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
+  }
+
+  res.writeHead(status, headers)
   res.end(body)
 }
 
-function json(res, status, value) {
-  send(res, status, JSON.stringify(value))
+function json(res, status, value, cors = false) {
+  send(res, status, JSON.stringify(value), 'application/json; charset=utf-8', cors)
 }
 
 async function readBody(req) {
@@ -149,14 +177,22 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost')
   const route = url.pathname
 
-  if (req.method === 'OPTIONS') return send(res, 204, '')
+  // Preflight is only meaningful for the two endpoints the extension uses.
+  if (req.method === 'OPTIONS') {
+    return send(res, 204, '', 'text/plain', PUBLIC_ENDPOINTS.has(route))
+  }
+
+  // Everything that changes state must come from the overlay itself. Without
+  // this, any open web page could clear a recording or delete a project.
+  if (req.method === 'POST' && !PUBLIC_ENDPOINTS.has(route) && !isSameOrigin(req)) {
+    return json(res, 403, { error: 'Cross-origin requests are not allowed for this endpoint.' })
+  }
 
   if (route === '/api/stream') {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-store',
       Connection: 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
     })
     res.write(`data: ${JSON.stringify(snapshot())}\n\n`)
     clients.add(res)
@@ -171,11 +207,13 @@ const server = http.createServer(async (req, res) => {
     return detail ? json(res, 200, detail) : json(res, 404, { error: 'unknown action' })
   }
 
+  // The browser extension posts the label of the control that was clicked. It
+  // adds context to a recording; it cannot read one.
   if (route === '/api/action' && req.method === 'POST') {
     const body = await readBody(req)
-    if (!body.id) return json(res, 400, { error: 'id required' })
+    if (!body.id) return json(res, 400, { error: 'id required' }, true)
     store.registerAction(body)
-    return json(res, 200, { ok: true })
+    return json(res, 200, { ok: true }, true)
   }
 
   if (route === '/api/mark' && req.method === 'POST') {
@@ -200,7 +238,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, {
       'Content-Type': 'application/json; charset=utf-8',
       'Content-Disposition': `attachment; filename="db-calls-${Date.now()}.json"`,
-      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-store',
     })
     return res.end(JSON.stringify(store.exportAll(), null, 2))
   }
@@ -273,12 +311,18 @@ const server = http.createServer(async (req, res) => {
 
   if (route === '/api/config') {
     if (req.method === 'POST') {
+      // Writing settings is the overlay's own business.
+      if (!isSameOrigin(req)) {
+        return json(res, 403, { error: 'Cross-origin requests are not allowed for this endpoint.' })
+      }
       const body = await readBody(req)
       const saved = projects.saveSettings({ apiPorts: body.apiPorts })
       store.version++
       return json(res, 200, { ...saved, uiPort: HTTP_PORT, ingestPort: INGEST_PORT })
     }
-    return json(res, 200, { ...projects.loadSettings(), uiPort: HTTP_PORT, ingestPort: INGEST_PORT })
+
+    // Read-only, and only the port list: the browser extension needs this.
+    return json(res, 200, { ...projects.loadSettings(), uiPort: HTTP_PORT, ingestPort: INGEST_PORT }, true)
   }
 
   if (route === '/api/health') {

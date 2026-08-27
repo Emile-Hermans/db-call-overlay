@@ -4,7 +4,10 @@ import { chromium } from 'playwright'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+// Repo root: normally the parent of tools/, but overridable so the test can be
+// run from a folder where Playwright happens to be installed.
+//   node ui-test.mjs [screenshot path] [repo root]
+const ROOT = process.argv[3] ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 const out = process.argv[2] ?? 'ui.png'
 const UI = 'http://127.0.0.1:8478'
@@ -69,23 +72,34 @@ await page.waitForFunction((n) => document.querySelectorAll('.action').length ==
 check(true, 'flow deleted from the list')
 
 // --- the note must survive a reopen of the project -------------------------
+// Ask which folder was actually created: a leftover project of the same name
+// makes it CheckoutFlow-2, and reopening the wrong one proves nothing.
+const folder = await page.evaluate(async () => (await (await fetch('/api/state')).json()).project.folder)
+
 await page.evaluate(() => fetch('/api/projects/open', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ folder: null }),
 }))
 await page.waitForFunction(() => document.getElementById('projectName').textContent === 'Scratch')
-await page.evaluate(() => fetch('/api/projects/open', {
+await page.evaluate((f) => fetch('/api/projects/open', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ folder: 'CheckoutFlow' }),
-}))
+  body: JSON.stringify({ folder: f }),
+}), folder)
 await page.waitForFunction(() => document.querySelector('.action button.note.has-note') !== null, null, { timeout: 10000 })
 check(true, 'note survived closing and reopening the project')
 
 await page.locator('.action', { hasText: 'Recalculate order' }).first().locator('.arow').click()
 await page.waitForTimeout(700)
 await page.screenshot({ path: out, fullPage: true })
+
+// Leave no project behind, so the next run starts from the same place.
+await page.evaluate((f) => fetch('/api/projects/delete', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ folder: f }),
+}), folder)
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 await browser.close()

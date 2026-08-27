@@ -112,8 +112,16 @@ internal static class Updater
         return (true, "Updated. Rebuilding and restarting…");
     }
 
+    /// <summary>Quotes a path for a PowerShell single-quoted string.</summary>
+    private static string Literal(string value) => value.Replace("'", "''");
+
     private static string WriteRestartScript(string repoRoot, string exePath)
     {
+        // Paths are interpolated into the script, so they are escaped: a folder
+        // named "Emile's tools" would otherwise end the string early.
+        repoRoot = Literal(repoRoot);
+        exePath = Literal(exePath);
+
         // $pid is reserved in PowerShell, hence $appPid.
         var script = new StringBuilder()
             .AppendLine($"$appPid = {Environment.ProcessId}")
