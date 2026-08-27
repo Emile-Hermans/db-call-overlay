@@ -243,7 +243,7 @@ function groupRow(actionId, g) {
 
   return `
     <div class="group ${g.level === 'high' ? 'red' : g.level === 'med' ? 'amber' : 'ok'} ${isOpen ? 'open' : ''}" data-key="${esc(g.id)}">
-      <button class="grow">
+      <div class="grow" role="button" tabindex="0" aria-expanded="${isOpen}">
         <span class="chev">&#9656;</span>
         <span class="op op-${esc(g.op)}">${esc(g.op)}</span>
         <span class="tbl" title="${esc(g.table ?? 'No table name could be read from this statement — see the SQL below')}">
@@ -253,7 +253,11 @@ function groupRow(actionId, g) {
         <span class="sub">${uniqueText}</span>
         <span class="site" title="${esc(siteTooltip(g))}">${site}</span>
         <span class="ms">${ms(g.totalMs)}</span>
-      </button>
+        <span class="rowtools">
+          <button data-act="copy-call" title="Copy this call as text — finding, fix, call paths, SQL and executions">&#128203;</button>
+          <button data-act="save-call" title="Download this call as JSON">&#11015;</button>
+        </span>
+      </div>
       <div class="gdetail" ${isOpen ? '' : 'hidden'}>${isOpen ? groupBody(g) : ''}</div>
     </div>`
 }
@@ -324,14 +328,6 @@ function groupBody(g) {
     .join('')
 
   return `
-    <div class="calltools">
-      <button data-act="copy-call" title="Copy this one call as text — ready to paste into a ticket or a pull request">
-        &#128203; Copy this call
-      </button>
-      <button data-act="save-call" title="Download just this call as JSON">
-        &#11015; JSON
-      </button>
-    </div>
     ${g.findings.map(findingHtml).join('')}
     ${pathsHtml}
     <div class="section-title">SQL</div>
@@ -452,9 +448,11 @@ list.addEventListener('click', (event) => {
   }
 })
 
+// Action and group rows carry buttons, so they are divs rather than buttons and
+// need their own keyboard handling.
 list.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter' && event.key !== ' ') return
-  const row = event.target.closest('.arow')
+  const row = event.target.closest('.arow, .grow')
   if (!row) return
   event.preventDefault()
   row.click()

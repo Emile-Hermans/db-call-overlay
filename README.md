@@ -179,8 +179,25 @@ Colour is never the only signal — every row also carries the text tag.
 | `wide-select` | low | ≥ 30 columns projected — the whole entity materialised |
 
 **Finding the code:** every query group shows the method and `file:line`, linked as a
-`vscode://` URL. Where one statement is reached by several paths, each is listed and named by
-the first method where they *diverge* — the one to open.
+`vscode://` URL. The method shown is the first one *above* your data-access layer — the code
+you would actually change — and the helper that issued the command is on the tooltip. Where one
+statement is reached by several paths, each is listed and named by the first method where they
+*diverge*.
+
+The data-access layer is worked out from the recording itself, not from a list of names: a
+method used for many different queries that is almost always one of the innermost frames is
+infrastructure. Nothing to configure, whatever your codebase looks like.
+
+### Handing one call to someone else
+
+Every query-group row has two buttons, and neither needs the row opened:
+
+| | |
+|---|---|
+| 📋 | **Copy this call** as Markdown — the finding, the fix, the call paths with `file:line`, the SQL and the executions table. Paste straight into a ticket or a pull request. |
+| ⬇ | Download **that one call** as JSON. |
+
+**Export** in the toolbar still gives you the whole session.
 
 ---
 

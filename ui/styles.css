@@ -379,7 +379,8 @@ dialog menu button.primary {
   opacity: 0.55;
 }
 
-.action:hover .rowtools button {
+.action:hover .rowtools button,
+.group:hover .rowtools button {
   opacity: 0.9;
 }
 
@@ -888,7 +889,7 @@ dialog menu button.primary {
 
 .grow {
   display: grid;
-  grid-template-columns: 14px 56px minmax(90px, 0.9fr) 64px 92px minmax(140px, 1.6fr) 60px;
+  grid-template-columns: 14px 56px minmax(90px, 0.9fr) 64px 92px minmax(140px, 1.6fr) 60px 46px;
   align-items: center;
   gap: 9px;
   width: 100%;
@@ -899,6 +900,11 @@ dialog menu button.primary {
   text-align: left;
   padding: 6px 9px;
   cursor: pointer;
+}
+
+.grow:focus-visible {
+  outline: 1px solid var(--blue);
+  outline-offset: -2px;
 }
 
 .grow:hover {
@@ -971,29 +977,6 @@ dialog menu button.primary {
 .gdetail {
   padding: 2px 10px 10px 24px;
   border-top: 1px solid var(--line);
-}
-
-.calltools {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
-  margin: 8px 0 2px;
-}
-
-.calltools button {
-  background: var(--bg3);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  color: var(--muted);
-  font: inherit;
-  font-size: 11px;
-  padding: 4px 10px;
-  cursor: pointer;
-}
-
-.calltools button:hover {
-  border-color: var(--blue);
-  color: var(--blue);
 }
 
 .section-title {
