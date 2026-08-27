@@ -14,7 +14,6 @@ internal sealed class Settings
     public int OpacityPercent { get; set; } = 100;
     public int UiPort { get; set; } = 8478;
     public int IngestPort { get; set; } = 8477;
-    public bool TrayHintShown { get; set; }
 
     /// <summary>
     /// When recording was switched on. A Visual Studio that started before this

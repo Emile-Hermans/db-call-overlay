@@ -207,19 +207,23 @@ internal sealed class Collector : IDisposable
         return null;
     }
 
+    /// <summary>
+    /// Closing the app must not leave a collector running. That covers the one we
+    /// started, and one we merely attached to - a leftover from a previous window
+    /// is exactly the process nobody wants to hunt down in Task Manager.
+    /// </summary>
     public void Dispose()
     {
-        if (Attached)
-        {
-            return;
-        }
-
         try
         {
             if (_process is { HasExited: false })
             {
                 _process.Kill(entireProcessTree: true);
                 _process.WaitForExit(3000);
+            }
+            else if (Attached)
+            {
+                StopAttachedCollector();
             }
         }
         catch
@@ -228,6 +232,44 @@ internal sealed class Collector : IDisposable
 
         _process?.Dispose();
         _job?.Dispose();
+    }
+
+    /// <summary>
+    /// Asks the running collector for its own process id and stops it. Only a
+    /// node process is ever touched, so a stray pid can never take something else
+    /// down with it.
+    /// </summary>
+    private void StopAttachedCollector()
+    {
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            var body = client.GetStringAsync($"{Url}/api/health").GetAwaiter().GetResult();
+
+            var marker = "\"pid\":";
+            var at = body.IndexOf(marker, StringComparison.Ordinal);
+            if (at < 0)
+            {
+                return;
+            }
+
+            var digits = new string(body[(at + marker.Length)..].TakeWhile(char.IsDigit).ToArray());
+            if (!int.TryParse(digits, out var pid))
+            {
+                return;
+            }
+
+            using var collector = Process.GetProcessById(pid);
+            if (collector.ProcessName.Equals("node", StringComparison.OrdinalIgnoreCase))
+            {
+                collector.Kill(entireProcessTree: true);
+                collector.WaitForExit(3000);
+            }
+        }
+        catch
+        {
+            // already gone, unreachable, or not ours to stop
+        }
     }
 }
 

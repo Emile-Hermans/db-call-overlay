@@ -13,7 +13,6 @@ internal sealed class MainForm : Form
     private readonly Label _status = new();
     private readonly NotifyIcon _tray = new();
     private ToolStripMenuItem _pinItem = null!;
-    private bool _reallyClosing;
 
     public MainForm(Settings settings)
     {
@@ -318,7 +317,6 @@ internal sealed class MainForm : Form
         {
             // The rebuild script is waiting for this process to go away.
             await Task.Delay(1200);
-            _reallyClosing = true;
             Close();
         }
     }
@@ -565,7 +563,6 @@ internal sealed class MainForm : Form
 
     private void QuitForReal()
     {
-        _reallyClosing = true;
         Close();
     }
 
@@ -592,29 +589,10 @@ internal sealed class MainForm : Form
 
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
     {
-        // Closing the window (X, Alt+F4) parks the app in the tray so a recording
-        // is not lost by accident. Shutdown and Task Manager really do end it.
-        var mustExit = _reallyClosing
-            || e.CloseReason is CloseReason.WindowsShutDown
-                or CloseReason.ApplicationExitCall
-                or CloseReason.TaskManagerClosing;
-
-        if (!mustExit)
-        {
-            e.Cancel = true;
-            Hide();
-
-            if (!_settings.TrayHintShown)
-            {
-                _settings.TrayHintShown = true;
-                _settings.Save();
-                _tray.ShowBalloonTip(4000, "Still recording",
-                    "DB Call Overlay is in the tray — double-click the icon to bring it back, or right-click to quit.",
-                    ToolTipIcon.Info);
-            }
-            return;
-        }
-
+        // Closing the window closes the app. It used to park itself in the tray so
+        // a long recording could not be lost by a stray click, but an app you shut
+        // has to actually shut - leaving a process behind is worse than the risk.
+        // "Show / hide" in the tray menu is still there for stashing it on purpose.
         _settings.Save();
         _tray.Visible = false;
         _tray.Dispose();

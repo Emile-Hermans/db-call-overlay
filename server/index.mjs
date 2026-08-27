@@ -326,7 +326,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (route === '/api/health') {
-    return json(res, 200, { ok: true, apps: [...store.apps.values()], version: store.version })
+    // pid lets the desktop app stop a collector it did not start itself, so
+    // closing the window never leaves one running.
+    return json(res, 200, { ok: true, pid: process.pid, apps: [...store.apps.values()], version: store.version })
   }
 
   return serveStatic(res, route)

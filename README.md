@@ -271,7 +271,7 @@ It is deliberately cautious:
 
 | Path | What it is |
 |---|---|
-| `desktop/` | The app: .NET WinForms shell hosting the UI in WebView2. Owns the window, tray and settings, and supervises the collector through a job object so it can never leave an orphaned `node.exe`. |
+| `desktop/` | The app: .NET WinForms shell hosting the UI in WebView2. Owns the window, tray and settings, and supervises the collector through a job object so it can never leave an orphaned `node.exe`. Closing the window ends everything it started — including a collector it merely attached to. Use **Show / hide** in the tray menu to stash it without quitting. |
 | `probe/` | The recorder: a .NET startup-hook assembly. Subscribes to the EF Core and ASP.NET `DiagnosticListener`s, capturing SQL, duration, rows and the application call stack, streamed as NDJSON over TCP. Dependency-free, never throws into the host. |
 | `server/` | Zero-dependency Node collector. `sql.mjs` shreds commands into statements, `analyze.mjs` is the rule engine, `store.mjs` groups per action, `index.mjs` serves the UI. |
 | `ui/` | The overlay page. |
