@@ -1,5 +1,11 @@
 # Clicktrace
 
+[![Download for Windows](https://img.shields.io/github/v/release/Emile-Hermans/db-call-overlay?label=Download%20for%20Windows&style=for-the-badge&color=5b46f0)](https://github.com/Emile-Hermans/db-call-overlay/releases/latest)
+
+**[⬇ Download the latest ClicktraceSetup.exe](https://github.com/Emile-Hermans/db-call-overlay/releases/latest)**
+— one file, no git, .NET or Node.js needed. Windows SmartScreen warns because it is not
+code-signed: click *More info → Run anyway*. [More about the setup](#without-git--the-setup-exe).
+
 > ⚠️ **This project is fully vibecoded** — every line was written by an AI from conversational
 > prompts. See [the disclaimer](#disclaimer--this-is-fully-vibecoded) before you rely on it.
 
