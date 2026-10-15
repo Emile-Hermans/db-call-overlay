@@ -8,6 +8,27 @@ const MAX_CALLS = 60000
 /** How long a flow must be quiet before it is written to the project. */
 const SAVE_DEBOUNCE_MS = 1200
 
+/**
+ * Removes the absolute source path from every stack frame.
+ *
+ * Each frame carries two paths: the shortened one that is displayed, and `a`, the
+ * path exactly as the recorder saw it - which the editor links need while the app
+ * is open, and which nobody needs in a file that gets attached to a ticket. It
+ * names a checkout folder and usually a user account, so an export drops it.
+ */
+export function stripAbsolutePaths(value) {
+  if (Array.isArray(value)) return value.map(stripAbsolutePaths)
+  if (!value || typeof value !== 'object') return value
+
+  const out = {}
+  for (const [key, nested] of Object.entries(value)) {
+    // A frame is the only place `a` is used, and it always sits next to `m`.
+    if (key === 'a' && typeof nested === 'string' && 'm' in value) continue
+    out[key] = stripAbsolutePaths(nested)
+  }
+  return out
+}
+
 export class Store {
   constructor(options = {}) {
     this.cfg = { ...DEFAULTS, ...options }
@@ -23,6 +44,18 @@ export class Store {
     this.project = null
     this._saveTimers = new Map()
     this.reset()
+  }
+
+  /**
+   * Applies changed thresholds. Every analysis held in memory was produced under
+   * the old ones, so all of it has to go - saved flows keep the raw commands, so
+   * re-analysing them is exactly what happens when a project is reopened.
+   */
+  setThresholds(thresholds) {
+    this.cfg = { ...this.cfg, ...thresholds }
+    this._analysis.clear()
+    this.version++
+    return this.cfg
   }
 
   reset() {
@@ -236,6 +269,11 @@ export class Store {
       source: event.source,
       exec: event.exec,
       error: event.error ?? null,
+      // The recorder saw the request scope already ended when this command started
+      // - a definite "the user was not waiting" even when timestamps are ambiguous.
+      afterResponse: event.afterResponse === true,
+      // Whether the async API issued it; null when the recording predates the flag.
+      isAsync: typeof event.isAsync === 'boolean' ? event.isAsync : null,
       reqId: event.reqId ?? null,
       handler: event.handler ?? this.requests.get(event.reqId)?.handler ?? null,
       path: event.path ?? null,
@@ -456,8 +494,17 @@ export class Store {
     this.scheduleSave(action)
   }
 
+  /**
+   * Something about this action changed. `rev` is per action rather than global so
+   * the UI can tell which flows really moved - a row count arriving late changes
+   * what an open flow shows without changing any of the totals on its row.
+   */
   invalidate(actionId) {
-    if (actionId) this._analysis.delete(actionId)
+    if (actionId) {
+      this._analysis.delete(actionId)
+      const action = this.actions.get(actionId)
+      if (action) action.rev = (action.rev ?? 0) + 1
+    }
     this.version++
   }
 
@@ -551,6 +598,7 @@ export class Store {
         id: a.id,
         label: a.label,
         kind: a.kind,
+        rev: this.actions.get(a.id)?.rev ?? 0,
         note: this.actions.get(a.id)?.note ?? '',
         saved: this.actions.get(a.id)?.saved ?? false,
         startedAt: a.startedAt,
@@ -568,7 +616,20 @@ export class Store {
         projected: a.projected,
         reducible: a.reducible,
         totalMs: a.totalMs,
+        offMs: a.offMs,
+        waitedMs: a.waitedMs,
         colour: a.colour,
+        // How long the user waited, and whether the database is why.
+        wallMs: a.time?.wallMs ?? null,
+        serverMs: a.time?.serverMs ?? null,
+        dbShare: a.time?.dbShare ?? null,
+        verdict: a.time?.verdict?.kind ?? null,
+        staticLoops: a.staticLoops ?? 0,
+        scaling: a.scaling,
+        excluded: a.excluded,
+        // Everything the filter box matches on, so filtering never needs the detail.
+        tables: [...new Set(a.groups.map((g) => g.table).filter(Boolean))].slice(0, 40),
+        methods: [...new Set(a.groups.map((g) => g.callsite?.method).filter(Boolean))].slice(0, 40),
         topFindings: (() => {
           const all = [...a.findings, ...a.groups.flatMap((g) => g.findings)]
           const high = all.filter((f) => f.level === 'high')
@@ -584,10 +645,11 @@ export class Store {
   }
 
   exportAll() {
+    const actions = this.list()
     return {
       generatedAt: new Date().toISOString(),
-      summary: summarise(this.list()),
-      actions: this.list(),
+      summary: summarise(actions),
+      actions: actions.map(stripAbsolutePaths),
     }
   }
 }

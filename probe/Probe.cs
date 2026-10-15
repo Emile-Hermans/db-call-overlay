@@ -357,6 +357,10 @@ namespace DbProbe
 
             var scope = Current();
 
+            // EF reports whether the async API issued this command. Read once here:
+            // a missing property (older EF) stays "unknown" rather than "sync".
+            var isAsync = Reflect.Get(payload, "IsAsync");
+
             _pending[commandId] = new PendingCommand
             {
                 Id = NextId("q"),
@@ -367,6 +371,12 @@ namespace DbProbe
                 Database = SafeDatabase(command),
                 ExecuteMethod = Reflect.GetString(payload, "ExecuteMethod"),
                 Source = Reflect.GetString(payload, "CommandSource"),
+                HasIsAsync = isAsync is bool,
+                IsAsync = isAsync is bool && (bool)isAsync,
+                // The response is already gone: whatever issued this command, the
+                // user is not waiting for it. AsyncLocal flows into fire-and-forget
+                // tasks, so the scope is usually still reachable here after it ended.
+                AfterResponse = scope != null && scope.Ended,
                 ReqId = scope?.Id,
                 ActionId = scope?.ActionId,
                 ActionLabel = scope?.ActionLabel,
@@ -430,10 +440,20 @@ namespace DbProbe
                 .Str("path", pending.Path ?? scope?.Path)
                 .Str("httpMethod", pending.Method ?? scope?.Method)
                 .Str("commandId", commandId.ToString("N"))
-                .Str("error", error)
-                .ToString();
+                .Str("error", error);
 
-            Emitter.Send(json);
+            // Only meaningful values go on the wire: absence means "not known",
+            // which the collector treats differently from false.
+            if (pending.AfterResponse)
+            {
+                json.Bool("afterResponse", true);
+            }
+            if (pending.HasIsAsync)
+            {
+                json.Bool("isAsync", pending.IsAsync);
+            }
+
+            Emitter.Send(json.ToString());
         }
 
         /// <summary>
@@ -512,7 +532,7 @@ namespace DbProbe
 
             var scope = Current();
 
-            Emitter.Send(new Jsonw()
+            var json = new Jsonw()
                 .Str("kind", "sql")
                 .Str("id", NextId("q"))
                 .Str("app", _app)
@@ -530,8 +550,14 @@ namespace DbProbe
                 .Str("actionLabel", scope?.ActionLabel)
                 .Str("handler", scope?.Handler)
                 .Str("path", scope?.Path)
-                .Str("httpMethod", scope?.Method)
-                .ToString());
+                .Str("httpMethod", scope?.Method);
+
+            if (scope != null && scope.Ended)
+            {
+                json.Bool("afterResponse", true);
+            }
+
+            Emitter.Send(json.ToString());
         }
 
         // ---------------------------------------------------------------- helpers
@@ -690,6 +716,9 @@ namespace DbProbe
             public string Database;
             public string ExecuteMethod;
             public string Source;
+            public bool HasIsAsync;
+            public bool IsAsync;
+            public bool AfterResponse;
             public string ReqId;
             public string ActionId;
             public string ActionLabel;

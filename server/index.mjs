@@ -5,6 +5,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Store } from './store.mjs'
 import * as projects from './projects.mjs'
+import { sessionCsv, flowCsv, callCsv, csvFileName } from './csv.mjs'
+import { createLoopSource } from './loops.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const UI_DIR = path.join(HERE, '..', 'ui')
@@ -29,8 +31,23 @@ const store = new Store({
   // Optional override; by default file paths are shortened by recognising the
   // solution's own top-level folders, which works on any checkout or machine.
   repoRoots: (process.env.DBPROBE_REPO_ROOTS ?? '').split(';').filter(Boolean),
-  slowMs: Number(process.env.DBPROBE_SLOW_MS ?? 200),
+  ...projects.loadSettings().thresholds,
+  // An explicit environment variable still wins, so an existing setup keeps working.
+  ...(process.env.DBPROBE_SLOW_MS ? { slowMs: Number(process.env.DBPROBE_SLOW_MS) } : {}),
 })
+
+// A static loop report, if one is configured. Re-read when the file changes, so
+// re-running the analyser is enough to refresh what the overlay shows.
+const loadLoops = createLoopSource()
+let loopStatus = { configured: false }
+
+function refreshLoops() {
+  const { index, status } = loadLoops(projects.loadSettings().loopReport)
+  loopStatus = status
+  if ((store.cfg.loops ?? null) !== index) store.setThresholds({ loops: index })
+}
+refreshLoops()
+setInterval(refreshLoops, 5000).unref()
 
 /** Everything the UI needs, including how to attach a probe when none is connected. */
 function snapshot() {
@@ -40,6 +57,11 @@ function snapshot() {
     toolRoot: TOOL_ROOT,
     dataRoot: projects.DATA_ROOT,
     apiPorts: projects.loadSettings().apiPorts,
+    thresholds: projects.loadSettings().thresholds,
+    loops: loopStatus,
+    // The one recording control that is not a setting: it is read by the probe as
+    // a process starts, so the UI can only report what the running probes used.
+    paramsCaptured: process.env.DBPROBE_PARAMS !== 'off',
   }
 }
 
@@ -243,6 +265,51 @@ const server = http.createServer(async (req, res) => {
     return res.end(JSON.stringify(store.exportAll(), null, 2))
   }
 
+  /**
+   * The same report as a spreadsheet. All three scopes are served from here
+   * rather than built in the browser, so the Excel-specific details (delimiter,
+   * BOM, formula neutralisation) exist in exactly one place.
+   *
+   *   /api/export.csv                        every query group of every flow
+   *   /api/export.csv?flow=<id>              every query group of one flow
+   *   /api/export.csv?flow=<id>&group=<id>   every execution of one query group
+   */
+  if (route === '/api/export.csv') {
+    const flowId = url.searchParams.get('flow')
+    const groupId = url.searchParams.get('group')
+    const factor = projects.loadSettings().thresholds.projectionFactor
+    const day = new Date().toISOString().slice(0, 10)
+
+    let csv
+    let name
+
+    if (flowId) {
+      const action = store.detail(flowId)
+      if (!action) return json(res, 404, { error: 'unknown flow' })
+
+      if (groupId) {
+        const group = action.groups.find((g) => g.id === groupId)
+        if (!group) return json(res, 404, { error: 'unknown call' })
+        csv = callCsv(action, group)
+        name = csvFileName([day, group.op, group.table ?? 'call', action.label])
+      } else {
+        csv = flowCsv(action, factor)
+        name = csvFileName([day, action.label])
+      }
+    } else {
+      csv = sessionCsv(store.list(), factor)
+      name = csvFileName([day, 'db-calls'])
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${name}"`,
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    })
+    return res.end(csv)
+  }
+
   // ---------------------------------------------------------- projects
 
   if (route === '/api/projects') return json(res, 200, projects.listProjects())
@@ -316,13 +383,22 @@ const server = http.createServer(async (req, res) => {
         return json(res, 403, { error: 'Cross-origin requests are not allowed for this endpoint.' })
       }
       const body = await readBody(req)
-      const saved = projects.saveSettings({ apiPorts: body.apiPorts })
-      store.version++
-      return json(res, 200, { ...saved, uiPort: HTTP_PORT, ingestPort: INGEST_PORT })
+      const saved = projects.saveSettings({
+        apiPorts: body.apiPorts,
+        thresholds: body.thresholds,
+        ...(typeof body.loopReport === 'string' ? { loopReport: body.loopReport.trim().replace(/^"(.*)"$/, '$1') } : {}),
+      })
+      // Changed thresholds mean every recording has to be judged again.
+      store.setThresholds(saved.thresholds)
+      refreshLoops()
+      return json(res, 200, { ...saved, loops: loopStatus, uiPort: HTTP_PORT, ingestPort: INGEST_PORT })
     }
 
-    // Read-only, and only the port list: the browser extension needs this.
-    return json(res, 200, { ...projects.loadSettings(), uiPort: HTTP_PORT, ingestPort: INGEST_PORT }, true)
+    // The overlay itself also gets the local report path; any other page only
+    // the port list the browser extension needs - a file path is nobody else's business.
+    const { loopReport, ...shared } = projects.loadSettings()
+    if (isSameOrigin(req)) return json(res, 200, { ...shared, loopReport, loops: loopStatus, uiPort: HTTP_PORT, ingestPort: INGEST_PORT })
+    return json(res, 200, { ...shared, uiPort: HTTP_PORT, ingestPort: INGEST_PORT }, true)
   }
 
   if (route === '/api/health') {

@@ -21,7 +21,23 @@ const stack = (...frames) => frames.map(([m, f, l]) => ({ m, f, l }))
 let clock = Date.now()
 const tick = (n = 3) => (clock += n)
 
-function sql({ action, label, req, handler, path, sqlText, params = [], ms = 4, rows, affected, app = API, stack: frames = [] }) {
+function sql({
+  action,
+  label,
+  req,
+  handler,
+  path,
+  sqlText,
+  params = [],
+  ms = 4,
+  rows,
+  affected,
+  app = API,
+  stack: frames = [],
+  // What the data-access layer reports the command was. These are the values a
+  // real recording carries, and they decide how the statement is judged.
+  source = 'LinqQuery',
+}) {
   const id = `q-${++seq}`
   push({
     kind: 'sql',
@@ -35,8 +51,8 @@ function sql({ action, label, req, handler, path, sqlText, params = [], ms = 4, 
     params,
     stack: frames,
     db: DB,
-    exec: 'ExecuteReader',
-    source: 'Linq',
+    exec: source === 'BulkUpdate' ? 'ExecuteNonQuery' : 'ExecuteReader',
+    source,
     reqId: req,
     actionId: action,
     actionLabel: label,
@@ -144,6 +160,7 @@ for (const pass of [1, 2]) {
     params,
     ms: 130,
     affected: 50,
+    source: 'SaveChanges',
     stack: stack(
       ['OrderLineRepository.SaveAll', `${REPO}\\OrderLineRepository.cs`, 402],
       [`OrderService.${pass === 1 ? 'ResetTotals' : 'PersistTotals'}`, `${SERVICES}\\OrderService.cs`, pass === 1 ? 152 : 231],
@@ -193,6 +210,88 @@ sql({
   stack: stack(['LookupRepository.GetAll', `${REPO}\\LookupRepository.cs`, 41]),
 })
 push({ kind: 'reqend', id: 'r3', ts: tick(), durationMs: 360, status: 200, handler: 'LookupsController.All' })
+
+// -------------------------------------------------------------------- action 4
+// A loop inside a loop. Three orders, four shipments each, one query per
+// shipment: twelve calls today, and twelve is 3 x 4 rather than a constant. This
+// is what the growth badges are for - the count follows the data, so the
+// recording only shows what today's data costs.
+
+const A4 = 'ui-order-tree'
+const L4 = 'Open order tree'
+
+push({ kind: 'req', id: 'r4', app: API, pid: 1234, ts: tick(500), method: 'GET', path: '/api/Orders/Tree', actionId: A4, actionLabel: L4 })
+
+const tree = (sqlText, params, frames, rows) =>
+  sql({ action: A4, label: L4, req: 'r4', handler: 'OrdersController.Tree', sqlText, params, ms: 3, rows, stack: frames })
+
+tree(
+  'SELECT [o].[Id], [o].[Reference] FROM [Orders] AS [o] WHERE [o].[TenantId] = @__tenant_0',
+  [{ n: '@__tenant_0', v: 'TENANT-1' }],
+  stack(
+    ['OrderRepository.GetForTenant', `${REPO}\\OrderRepository.cs`, 51],
+    ['OrderTreeService.Build', `${SERVICES}\\OrderTreeService.cs`, 24],
+  ),
+  4, // three rows, plus the read that finds the end of the set
+)
+
+for (let o = 0; o < 3; o++) {
+  tree(
+    'SELECT [s].[Id], [s].[Carrier] FROM [Shipments] AS [s] WHERE [s].[OrderId] = @__orderId_0',
+    [{ n: '@__orderId_0', v: `ORDER-${o}` }],
+    stack(
+      ['ShipmentRepository.GetByOrder', `${REPO}\\ShipmentRepository.cs`, 64],
+      ['OrderTreeService.AddShipments', `${SERVICES}\\OrderTreeService.cs`, 39],
+    ),
+    5, // four shipments each
+  )
+}
+
+for (let s = 0; s < 12; s++) {
+  tree(
+    'SELECT [l].[Id], [l].[Quantity] FROM [OrderLines] AS [l] WHERE [l].[ShipmentId] = @__shipmentId_0',
+    [{ n: '@__shipmentId_0', v: `SHIPMENT-${s}` }],
+    stack(
+      ['OrderLineRepository.GetByShipment', `${REPO}\\OrderLineRepository.cs`, 77],
+      ['OrderTreeService.AddLines', `${SERVICES}\\OrderTreeService.cs`, 58],
+    ),
+    3,
+  )
+}
+
+push({ kind: 'reqend', id: 'r4', ts: tick(), durationMs: 95, status: 200, handler: 'OrdersController.Tree' })
+
+// -------------------------------------------------------------------- action 5
+// Schema work, which is real database traffic but not something a flow can be
+// blamed for. It has to be visible and out of the counts, not silently dropped.
+
+const A5 = 'ui-first-click'
+const L5 = 'First click after start-up'
+
+push({ kind: 'req', id: 'r5', app: API, pid: 1234, ts: tick(500), method: 'GET', path: '/api/Orders/Count', actionId: A5, actionLabel: L5 })
+sql({
+  action: A5,
+  label: L5,
+  req: 'r5',
+  handler: 'OrdersController.Count',
+  sqlText: 'SELECT [m].[MigrationId], [m].[ProductVersion] FROM [__SchemaHistory] AS [m] ORDER BY [m].[MigrationId]',
+  ms: 22,
+  rows: 9,
+  source: 'Migrations',
+  stack: stack(['SchemaMigrator.Apply', `${REPO}\\SchemaMigrator.cs`, 18]),
+})
+sql({
+  action: A5,
+  label: L5,
+  req: 'r5',
+  handler: 'OrdersController.Count',
+  sqlText: 'SELECT COUNT(*) FROM [Orders] AS [o] WHERE [o].[TenantId] = @__tenant_0',
+  params: [{ n: '@__tenant_0', v: 'TENANT-1' }],
+  ms: 6,
+  rows: 1,
+  stack: stack(['OrderRepository.CountFor', `${REPO}\\OrderRepository.cs`, 96]),
+})
+push({ kind: 'reqend', id: 'r5', ts: tick(), durationMs: 40, status: 200, handler: 'OrdersController.Count' })
 
 socket.on('connect', () => {
   socket.write(lines.join('\n') + '\n')

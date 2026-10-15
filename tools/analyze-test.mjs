@@ -11,18 +11,20 @@ const check = (ok, what, extra = '') => {
 }
 
 let seq = 0
-function call({ req, sql, params = [], ms = 2, site = 'Svc.Method', line = 10 }) {
+function call({ req, sql, params = [], ms = 2, site = 'Svc.Method', line = 10, at, isAsync, afterResponse }) {
   const id = `q${++seq}`
   const c = {
     id,
     seq,
-    ts: 1000 + seq,
+    ts: at ?? 1000 + seq,
     durationMs: ms,
     rowsAffected: -1,
     rowsRead: -1,
     app: 'Shop.OrdersApi',
     reqId: req,
     handler: req,
+    isAsync: isAsync ?? null,
+    afterResponse: afterResponse ?? false,
     stack: [{ m: site, f: 'Core\\X.cs', l: line }],
   }
   c.sql = sql
@@ -113,6 +115,156 @@ for (const [sql, expected] of shapes) {
   const { statements } = shred(sql, [])
   const table = statements[0]?.table
   check(table === expected, `table parsed from ${sql.slice(0, 42)}…`, `got ${table}`)
+}
+
+// ---------------------------------------------------------------------------
+// Two ways an execution can carry no parameter values, which mean opposite things.
+const alone = (calls, label) =>
+  analyzeAction({ id: label, label, kind: 'click', startedAt: 1000, endedAt: 2000, calls, requests: [{ id: 'r1' }], saveChanges: [] })
+
+// 1. The keys were folded into the SQL as literals. Four different rows, read
+//    once each - normalising the shape must not make them look like one row.
+{
+  const inlined = alone(
+    [1, 2, 3, 4].map((i) =>
+      call({ req: 'r1', sql: `SELECT [l].[Id], [l].[Qty] FROM [OrderLines] AS [l] WHERE [l].[Id] = ${i}`, site: 'Svc.Loop' }),
+    ),
+    'inlined',
+  )
+  const g = inlined.groups[0]
+  check(g?.distinctParams === 4, 'inlined literals count as four distinct executions', `got ${g?.distinctParams}`)
+  check(
+    !g?.findings.some((f) => f.code === 'identical-repeat'),
+    'four different rows are not reported as the same query repeated',
+  )
+  // The count is the same either way; what changes is which fix it points at.
+  // "Reuse the result you already have" is wrong advice here - there is no
+  // earlier result to reuse, there are four separate rows to load in one query.
+  check(g?.findings.some((f) => f.code === 'n-plus-one'), 'it is recognised as the N+1 it actually is')
+  check(
+    g?.findings.find((f) => f.code === 'n-plus-one')?.avoidable === 3,
+    'three of the four lookups are removable by loading the set at once',
+    `got ${g?.findings.find((f) => f.code === 'n-plus-one')?.avoidable}`,
+  )
+  check(inlined.avoidableInRequest === 3, 'and that is the whole in-request saving', `got ${inlined.avoidableInRequest}`)
+}
+
+// 2. A query with no parameters and no literals really is the same every time.
+{
+  const same = alone(
+    [1, 2, 3].map(() => call({ req: 'r1', sql: 'SELECT COUNT(*) FROM [OrderLines]', site: 'Svc.Count' })),
+    'repeat',
+  )
+  check(same.avoidableInRequest === 2, 'a genuinely identical query is still counted as a repeat', `got ${same.avoidableInRequest}`)
+}
+
+// 3. The statement names parameters but none of their values were captured, so
+//    nothing may be concluded either way.
+{
+  const uncaptured = alone(
+    [1, 2, 3].map(() =>
+      call({ req: 'r1', sql: 'SELECT [l].[Id] FROM [OrderLines] AS [l] WHERE [l].[Id] = @p0', params: [], site: 'Svc.Loop' }),
+    ),
+    'uncaptured',
+  )
+  check(
+    uncaptured.avoidableInRequest === 0,
+    'executions with no captured values are not assumed to be repeats',
+    `got ${uncaptured.avoidableInRequest}`,
+  )
+  check(uncaptured.groups[0]?.unknownSigs === 3, 'they are reported as uncomparable instead', `got ${uncaptured.groups[0]?.unknownSigs}`)
+}
+
+// ---------------------------------------------------------------------------
+// Awaited vs not: the response of request r1 goes out at 1000 + 50 = 1050 ms.
+// A call is only claimed as "not waited for" when the timestamps prove it.
+{
+  const quotes = 'SELECT [q].[Id] FROM [Quotes] AS [q] WHERE [q].[Id] = @p0'
+  const orders = 'SELECT [o].[Id] FROM [Orders] AS [o] WHERE [o].[Id] = @p0'
+  const settings = 'SELECT [s].[Id] FROM [TenantSettings] AS [s] WHERE [s].[CrmId] = @p0'
+  const lines = 'SELECT [l].[Id] FROM [OrderLines] AS [l] WHERE [l].[Id] = @p0'
+  const write = 'UPDATE [Lookups] SET [Val] = @p0 WHERE [Id] = @p1'
+  const audit = 'INSERT INTO [Shipments] ([Id]) VALUES (@p0)'
+
+  const t = analyzeAction({
+    id: 'timing',
+    label: 'Timing',
+    kind: 'click',
+    startedAt: 1000,
+    endedAt: 2000,
+    requests: [{ id: 'r1', startedAt: 1000, durationMs: 50 }],
+    saveChanges: [],
+    calls: [
+      // Inside the window, done well before the response: waited.
+      call({ req: 'r1', at: 1010, ms: 20, sql: quotes, params: [{ n: '@p0', v: 'q-1' }] }),
+      // Still running 30 ms after the response went out: not waited for.
+      call({ req: 'r1', at: 1040, ms: 40, sql: orders, params: [{ n: '@p0', v: 'o-1' }] }),
+      // Ends 5 ms past the response - inside the rounding tolerance, so waited.
+      call({ req: 'r1', at: 1030, ms: 25, sql: settings, params: [{ n: '@p0', v: 'crm-1' }] }),
+      // Sync API inside the window.
+      call({ req: 'r1', at: 1015, ms: 3, sql: lines, params: [{ n: '@p0', v: 'l-1' }], isAsync: false, site: 'Svc.Sync' }),
+      // The probe's own flag beats the timestamps: the scope had already ended.
+      call({ req: 'r1', at: 1020, ms: 2, sql: lines, params: [{ n: '@p0', v: 'l-2' }], afterResponse: true, site: 'Svc.Flag' }),
+      // A write that started after the response: fire-and-forget.
+      call({ req: 'r1', at: 1100, ms: 5, sql: write, params: [{ n: '@p0', v: '1' }, { n: '@p1', v: 'k-1' }] }),
+      // No request at all: background, and deliberately NOT flagged as fire-and-forget.
+      call({ req: null, at: 1200, ms: 7, sql: audit, params: [{ n: '@p0', v: 's-1' }] }),
+    ],
+  })
+
+  const groupOf = (table, op = 'SELECT') => t.groups.find((g) => g.table === table && g.op === op)
+
+  check(t.offMs === 40 + 2 + 5 + 7, 'offMs sums the durations the user never waited for', `got ${t.offMs}`)
+  check(t.waitedMs === t.totalMs - t.offMs, 'waitedMs + offMs = totalMs', `got ${t.waitedMs} of ${t.totalMs}`)
+  check(t.offCalls === 4, 'four statements were not waited for', `got ${t.offCalls}`)
+
+  check(groupOf('Quotes')?.timing.waited === 1, 'a call inside the window is waited')
+  check(groupOf('Orders')?.timing.afterResponse === 1, 'a call still running past the response is not waited for')
+  check(groupOf('TenantSettings')?.timing.waited === 1, 'a call ending a hair past the response stays waited (tolerance)')
+  check(
+    t.groups.find((g) => g.callsite?.method === 'Svc.Flag')?.timing.afterResponse === 1,
+    "the probe's afterResponse flag wins even when the timestamps look fine",
+  )
+  check(groupOf('Shipments', 'INSERT')?.timing.background === 1, 'a call with no request is background')
+
+  const ff = groupOf('Lookups', 'UPDATE')?.findings.find((f) => f.code === 'fire-and-forget-write')
+  check(Boolean(ff), 'a write after the response gets the fire-and-forget finding')
+  check(ff?.level === 'med', 'fire-and-forget is a review, not red waste', `got ${ff?.level}`)
+  check(
+    !groupOf('Shipments', 'INSERT')?.findings.some((f) => f.code === 'fire-and-forget-write'),
+    'a background write is not called fire-and-forget — it belongs to no response',
+  )
+
+  check(
+    t.groups.find((g) => g.callsite?.method === 'Svc.Sync')?.findings.some((f) => f.code === 'sync-db-call'),
+    'a call issued through the blocking API is noted',
+  )
+  check(
+    !groupOf('Quotes')?.findings.some((f) => f.code === 'sync-db-call'),
+    'a call with no async flag claims nothing about the API used',
+  )
+
+  // Executions carry the timing so the drill-down can mark the rows.
+  check(
+    groupOf('Lookups', 'UPDATE')?.executions[0]?.timing === 'afterResponse',
+    'each execution reports its own timing',
+  )
+}
+
+// Requests recorded before the request window existed carry no durations: every
+// call must count as waited, exactly as before.
+{
+  const old = analyzeAction({
+    id: 'old',
+    label: 'Old flow',
+    kind: 'click',
+    startedAt: 1000,
+    endedAt: 2000,
+    requests: [{ id: 'r1' }],
+    saveChanges: [],
+    calls: [call({ req: 'r1', at: 999999, ms: 4, sql: 'SELECT [q].[Id] FROM [Quotes] AS [q] WHERE [q].[Id] = @p0', params: [{ n: '@p0', v: 'q' }] })],
+  })
+  check(old.offMs === 0, 'a request without an end time claims nothing', `got ${old.offMs}`)
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)

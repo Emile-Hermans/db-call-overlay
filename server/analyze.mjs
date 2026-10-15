@@ -1,6 +1,10 @@
 // Rule engine: turns the raw calls of one UI action into grouped, colour-coded
 // rows with a concrete "this is how many calls you could remove" number.
 
+import { analyzeTime } from './timeline.mjs'
+import { analyzeScaling, scalingFinding, SCALING_DEFAULTS } from './scaling.mjs'
+import { SEP } from './sql.mjs'
+
 export const DEFAULTS = {
   slowMs: 200,
   verySlowMs: 600,
@@ -8,9 +12,102 @@ export const DEFAULTS = {
   loopRoundTrips: 5,
   nPlusOneMin: 3,
   nPlusOneMaxParams: 4,
+  ...SCALING_DEFAULTS,
 }
 
 const LEVEL_RANK = { ok: 0, low: 1, med: 2, high: 3 }
+
+/**
+ * What kind of database work a command was, taken from the data-access layer's
+ * own report of it rather than guessed from the SQL.
+ *
+ * This is the difference between a query, a change-tracker flush and a set-based
+ * bulk write, and it decides two things no other signal can: whether a row count
+ * can be read directly or has to be inferred, and whether advice about a change
+ * tracker applies to this code at all.
+ *
+ * `unknown` is a real answer - older versions of the data-access layer do not
+ * report a source, and a hand-written command has none. Nothing is filtered or
+ * claimed on the strength of `unknown`.
+ */
+export function commandKind(call) {
+  const source = String(call?.source ?? '').toLowerCase()
+  if (source === 'savechanges') return 'save'
+  if (source === 'bulkupdate') return 'bulk'
+  if (source === 'migrations') return 'migration'
+  if (source === 'valuegenerator') return 'valuegen'
+  if (source === 'linqquery') return 'query'
+  if (source.startsWith('fromsql') || source.startsWith('executesql') || source === 'adonet') return 'rawsql'
+  return 'unknown'
+}
+
+/** Wording for the kinds, so the UI and the markdown export cannot drift apart. */
+export const KIND_LABEL = {
+  query: 'query',
+  save: 'save',
+  bulk: 'bulk write',
+  rawsql: 'raw sql',
+  migration: 'migration',
+  valuegen: 'key generator',
+  unknown: '',
+}
+
+/**
+ * Round trips that are not the application asking its own questions. Schema work
+ * and key-block fetches are real database traffic, but counting them as calls the
+ * developer could remove makes every number wrong - especially in a flow recorded
+ * shortly after the process started.
+ */
+const INFRASTRUCTURE_KINDS = new Set(['migration', 'valuegen'])
+
+// The two duration measurements (the command's own stopwatch and the request's)
+// do not round identically, so the last awaited query of a request can appear to
+// outlive the response by a hair. Only a call that runs meaningfully past the
+// response is claimed as not waited for.
+const OVERLAP_TOLERANCE_MS = 10
+
+/**
+ * When did each call run, relative to the response the user was waiting on?
+ *
+ *   waited        - inside its request's window. The user (probably) waited for it.
+ *   afterResponse - started after the response was sent, or still running when it
+ *                   went out. Real database work, but it never slowed the screen -
+ *                   a fire-and-forget task, or a continuation the request did not
+ *                   await.
+ *   background    - belongs to no request at all: a timer, a queue, a startup task.
+ *
+ * The honest limit: a fire-and-forget call that happens to FINISH before the
+ * response is indistinguishable from an awaited one - no runtime event says
+ * whether a task was awaited. So the labels claim only what the timestamps prove,
+ * and a request whose end was never seen claims nothing at all.
+ */
+export function classifyTiming(action) {
+  const requests = new Map()
+  for (const r of action.requests ?? []) requests.set(r.id, r)
+
+  const timing = new Map()
+  for (const call of action.calls ?? []) timing.set(call.id, timingOf(call, requests))
+  return timing
+}
+
+function timingOf(call, requests) {
+  // The recorder saw the request scope already ended when the command started.
+  if (call.afterResponse === true) return 'afterResponse'
+  if (!call.reqId) return 'background'
+
+  const req = requests.get(call.reqId)
+  if (!req || typeof req.startedAt !== 'number' || typeof req.durationMs !== 'number') return 'waited'
+
+  const responseAt = req.startedAt + req.durationMs
+  if (call.ts >= responseAt) return 'afterResponse'
+  if (call.ts + (call.durationMs ?? 0) > responseAt + OVERLAP_TOLERANCE_MS) return 'afterResponse'
+  return 'waited'
+}
+
+/** Executions whose identity is known. The rest prove nothing when compared. */
+function identified(units) {
+  return units.filter((u) => u.paramSig !== null && u.paramSig !== undefined)
+}
 
 function worst(a, b) {
   return LEVEL_RANK[b] > LEVEL_RANK[a] ? b : a
@@ -232,14 +329,30 @@ function analyzeGroup(g, cfg) {
   let roundTripSavings = 0
 
   const requests = byRequest(g.units)
-  const paramSigs = g.units.map((u) => u.paramSig)
-  const distinctParams = new Set(paramSigs).size
+  // Only executions whose values were captured can be compared with each other.
+  const known = identified(g.units)
+  const unknownSigs = g.count - known.length
+  const distinctParams = new Set(known.map((u) => u.paramSig)).size
   const rowKeys = g.units.map((u) => u.rowKey)
   const distinctRows = new Set(rowKeys).size
   const reqIds = new Set(g.units.map((u) => u.call.reqId).filter(Boolean))
-  const avgParams = g.units.reduce((s, u) => s + u.params.length, 0) / g.count
   const isWrite = g.op === 'UPDATE' || g.op === 'INSERT' || g.op === 'DELETE' || g.op === 'MERGE'
   const paths = callPathsOf(g.units, cfg.plumbing ?? new Set())
+
+  // What the data-access layer says these commands were. It decides whether the
+  // change tracker is even in the picture, and therefore which fix is real.
+  const kinds = [...new Set(g.units.map((u) => commandKind(u.call)))]
+  const tracked = kinds.includes('save')
+  const setBased = kinds.length > 0 && kinds.every((k) => k === 'bulk')
+
+  // Did the user actually wait for these calls? Counted per statement, like g.count.
+  const timing = { waited: 0, afterResponse: 0, background: 0 }
+  for (const u of g.units) timing[cfg.timing?.get(u.call.id) ?? 'waited']++
+
+  // The data-access layer reports whether each command used the async API. Old
+  // recordings and raw ADO.NET commands carry no flag, and prove nothing.
+  const asyncFlags = g.units.map((u) => u.call.isAsync).filter((v) => typeof v === 'boolean')
+  const allSync = asyncFlags.length === g.units.length && asyncFlags.every((v) => v === false)
 
   /** e.g. "OrderService.Recalculate (50×) and OrderService.Persist (50×)" */
   const originsText = paths
@@ -250,11 +363,11 @@ function analyzeGroup(g, cfg) {
   if (g.op === 'SELECT') {
     // Repeats inside one request are waste; the remainder is repetition across
     // requests, which is a different (architectural) conversation.
-    const withinDupes = requests.reduce(
-      (sum, units) => sum + (units.length - new Set(units.map((u) => u.paramSig)).size),
-      0,
-    )
-    const totalDupes = g.count - distinctParams
+    const withinDupes = requests.reduce((sum, units) => {
+      const knownHere = identified(units)
+      return sum + (knownHere.length - new Set(knownHere.map((u) => u.paramSig)).size)
+    }, 0)
+    const totalDupes = known.length - distinctParams
     const acrossDupes = Math.max(totalDupes - withinDupes, 0)
 
     if (withinDupes > 0) {
@@ -264,7 +377,14 @@ function analyzeGroup(g, cfg) {
         level: 'high',
         bucket: 'inRequest',
         title: `Same query run ${withinDupes + 1}× with identical parameters in one request`,
-        detail: `Within a single request this returns data the process already had.`,
+        detail:
+          `Within a single request this returns data the process already had. ` +
+          `Repeating it is a real round-trip either way — reading the same rows again does not ` +
+          `come from a cache.` +
+          (unknownSigs > 0
+            ? ` ${unknownSigs} further execution${unknownSigs === 1 ? '' : 's'} could not be compared — ` +
+              `their parameter values were not captured, so they are excluded from this count.`
+            : ''),
         fix: 'Reuse the first result instead of re-querying — filter the list you already loaded in memory.',
         avoidable: withinDupes,
       })
@@ -287,9 +407,14 @@ function analyzeGroup(g, cfg) {
 
     // An N+1 is a loop inside one request, so measure it per request.
     const nPlusOne = requests.reduce((sum, units) => {
-      const distinct = new Set(units.map((u) => u.paramSig)).size
-      const perCall = units.reduce((s, u) => s + u.params.length, 0) / units.length
-      const isLoop = distinct >= cfg.nPlusOneMin && perCall > 0 && perCall <= cfg.nPlusOneMaxParams
+      const knownHere = identified(units)
+      if (!knownHere.length) return sum
+      const distinct = new Set(knownHere.map((u) => u.paramSig)).size
+      const perCall = knownHere.reduce((s, u) => s + u.params.length, 0) / knownHere.length
+      // A query whose keys were folded into the SQL has no parameters to count,
+      // but it is still one round-trip per key.
+      const keyed = perCall > 0 ? perCall <= cfg.nPlusOneMaxParams : distinct === knownHere.length
+      const isLoop = distinct >= cfg.nPlusOneMin && keyed
       return sum + (isLoop ? distinct - 1 : 0)
     }, 0)
 
@@ -335,13 +460,13 @@ function analyzeGroup(g, cfg) {
     // Only statements whose row could actually be identified. A statement whose
     // parameters were not captured tells us nothing, and counting it as another
     // write to the same row invents redundancy that is not there.
-    const identified = g.units.filter((u) => u.rowKey !== null && u.rowKey !== undefined)
-    const knownRows = new Set(identified.map((u) => u.rowKey)).size
-    const unidentified = g.count - identified.length
+    const withRowKey = g.units.filter((u) => u.rowKey !== null && u.rowKey !== undefined)
+    const knownRows = new Set(withRowKey.map((u) => u.rowKey)).size
+    const unidentified = g.count - withRowKey.length
 
-    const dupes = identified.length - knownRows
+    const dupes = withRowKey.length - knownRows
     if (dupes > 0 && knownRows > 0) {
-      const factor = (identified.length / knownRows).toFixed(1)
+      const factor = (withRowKey.length / knownRows).toFixed(1)
       writes += dupes
       findings.push({
         code: 'duplicate-write',
@@ -349,7 +474,7 @@ function analyzeGroup(g, cfg) {
         bucket: 'writes',
         title: `Every row of ${g.table ?? 'this table'} is written ${factor}× `.trim(),
         detail:
-          `${identified.length} ${g.op} statements touch only ${knownRows} distinct row${knownRows === 1 ? '' : 's'}. ` +
+          `${withRowKey.length} ${g.op} statements touch only ${knownRows} distinct row${knownRows === 1 ? '' : 's'}. ` +
           (paths.length > 1
             ? `The writes come from ${paths.length} different code paths: ${originsText}. `
             : `${dupes} of them write values that were just written. `) +
@@ -359,7 +484,9 @@ function analyzeGroup(g, cfg) {
         fix:
           paths.length > 1
             ? `Two passes save the same rows. Recalculate everything first, then persist once — merge the save in ${paths[1].origin ?? 'the second path'} into the one in ${paths[0].origin ?? 'the first'}.`
-            : 'Save each entity once — look for a second save pass over the same collection (recalculate first, then persist once at the end of the flow).',
+            : tracked
+              ? 'Save each entity once — look for a second save pass over the same collection (recalculate first, then persist once at the end of the flow).'
+              : 'Write each row once — two separate statements in this flow update the same row, so the first result is thrown away.',
         avoidable: dupes,
       })
     }
@@ -371,12 +498,56 @@ function analyzeGroup(g, cfg) {
         level: 'med',
         bucket: null,
         title: `${g.roundTrips} separate round-trips writing ${g.table ?? 'this table'}`,
-        detail: 'Each iteration goes to the database on its own instead of being batched into one command.',
-        fix: 'Move SaveChangesAsync outside the loop so EF batches the statements, or replace the loop with a set-based ExecuteUpdateAsync.',
+        // A loop of set-based writes is still a loop of round-trips, but telling
+        // it to become set-based would be advising the change it already made.
+        detail: setBased
+          ? 'Each iteration issues its own set-based write. Nothing is overwritten, but every iteration is still a round-trip of its own.'
+          : 'Each iteration goes to the database on its own instead of being batched into one command.',
+        fix: setBased
+          ? 'Widen the filter so one statement covers the whole set — a single WHERE ... IN (...) rather than one call per row.'
+          : 'Move SaveChangesAsync outside the loop so EF batches the statements, or replace the loop with a set-based ExecuteUpdateAsync.',
         avoidable: 0,
       })
     }
   }
+
+  // A write the user never waited for is a correctness risk, not a slowdown: the
+  // response said "done" before the database agreed, so a failure here reaches
+  // nobody. Only writes tied to a request are flagged - background services and
+  // timers write outside any request by design.
+  if (isWrite && timing.afterResponse > 0) {
+    findings.push({
+      code: 'fire-and-forget-write',
+      level: 'med',
+      bucket: null,
+      title: `${timing.afterResponse} write${timing.afterResponse === 1 ? ' ran' : 's ran'} after the response was already sent`,
+      detail:
+        'The user was told the request had finished before this write happened. It never slowed the ' +
+        'screen — but if it fails, the failure is invisible: the success response already went out.',
+      fix:
+        'If the flow depends on this write, await it before responding. If it is deliberate ' +
+        'background work, make sure a failure is logged and retried somewhere.',
+      avoidable: 0,
+    })
+  }
+
+  if (allSync && timing.waited > 0) {
+    findings.push({
+      code: 'sync-db-call',
+      level: 'low',
+      bucket: null,
+      title: 'Executed with the blocking (non-async) API',
+      detail:
+        'The request thread sits idle waiting for the database instead of returning to the pool. ' +
+        'It adds no database time, but under load it limits how many requests the app can serve at once.',
+      fix: 'Use the async variant of the query or save, and await it.',
+      avoidable: 0,
+    })
+  }
+
+  const scaling = cfg.scaling?.get(g.id) ?? null
+  const growth = scalingFinding(g, scaling, cfg)
+  if (growth) findings.push(growth)
 
   if (g.maxMs >= cfg.verySlowMs) {
     findings.push({
@@ -422,6 +593,15 @@ function analyzeGroup(g, cfg) {
     width: g.sample.width,
     hasWhere: g.sample.hasWhere,
     callPaths: paths,
+    // What kind of database work this was, and how its count grows with the data.
+    kinds,
+    kind: kinds.length === 1 ? kinds[0] : 'mixed',
+    tracked,
+    setBased,
+    timing,
+    sync: allSync,
+    scaling,
+    unknownSigs,
     executionsTruncated: Math.max(g.units.length - 200, 0),
     executions: g.units.slice(0, 200).map((u) => ({
       id: u.call.id,
@@ -438,6 +618,10 @@ function analyzeGroup(g, cfg) {
       error: u.call.error,
       params: u.params,
       sql: u.text,
+      kind: commandKind(u.call),
+      timing: cfg.timing?.get(u.call.id) ?? 'waited',
+      isAsync: typeof u.call.isAsync === 'boolean' ? u.call.isAsync : null,
+      exec: u.call.exec ?? null,
       origin: (u.call.stack ?? []).at(-1)?.m ?? null,
       stack: u.call.stack ?? [],
     })),
@@ -532,17 +716,26 @@ function duplicateRowWrites(units, groups) {
 
     if (unbatchedRows > 0 && unbatchedRoundTrips > 0) {
       roundTrips += unbatchedRoundTrips
+      // Only advise merging flushes when there was a change tracker doing the
+      // flushing. Set-based writes never went near one.
+      const viaTracker = [...rows.values()].some((writes) =>
+        writes.some((w) => commandKind(w.call) === 'save'),
+      )
       findings.push({
         code: 'unbatched-save',
         level: 'med',
         bucket: null,
         title: `${unbatchedRows} ${table} row${unbatchedRows === 1 ? '' : 's'} saved in several separate round-trips`,
-        detail:
-          'Each write sets different columns, so nothing is overwritten — these are separate ' +
-          'SaveChanges flushes persisting freshly calculated values one at a time.',
-        fix:
-          `Let the change tracker collect them and save once at the end of the flow. EF would ` +
-          `then issue a single UPDATE per row, saving about ${unbatchedRoundTrips} round-trip${unbatchedRoundTrips === 1 ? '' : 's'}.`,
+        detail: viaTracker
+          ? 'Each write sets different columns, so nothing is overwritten — these are separate ' +
+            'SaveChanges flushes persisting freshly calculated values one at a time.'
+          : 'Each write sets different columns, so nothing is overwritten — the same row is just ' +
+            'updated by several separate statements.',
+        fix: viaTracker
+          ? `Let the change tracker collect them and save once at the end of the flow. EF would ` +
+            `then issue a single UPDATE per row, saving about ${unbatchedRoundTrips} round-trip${unbatchedRoundTrips === 1 ? '' : 's'}.`
+          : `Compute every column first and write each row once, saving about ` +
+            `${unbatchedRoundTrips} round-trip${unbatchedRoundTrips === 1 ? '' : 's'}.`,
         avoidable: 0,
       })
     }
@@ -589,13 +782,19 @@ function readAfterWrite(units) {
     const after = list.slice(firstWrite).filter((u) => u.op === 'SELECT' && readsBefore.has(u.shape))
 
     if (after.length > 0) {
+      // "Update what you already have" only exists as an option if the write went
+      // through a change tracker. After a set-based write there is no tracked
+      // entity to update, and re-reading may be the only way to see the result.
+      const tracked = list.some((u) => u.op !== 'SELECT' && commandKind(u.call) === 'save')
       findings.push({
         code: 'read-after-write',
         level: 'med',
         bucket: null,
         title: `${table} is read again after it was saved`,
         detail: `${after.length} read${after.length === 1 ? '' : 's'} repeat a query that already ran before the write in this same action.`,
-        fix: 'Update the in-memory objects you just saved instead of reloading them, or recalculate from the persisted aggregate columns.',
+        fix: tracked
+          ? 'Update the in-memory objects you just saved instead of reloading them, or recalculate from the persisted aggregate columns.'
+          : 'The write was set-based, so there is no tracked entity to reuse — apply the same change to the objects you already hold, or compute the new values rather than reading them back.',
         avoidable: 0,
       })
     }
@@ -606,8 +805,18 @@ function readAfterWrite(units) {
 
 export function analyzeAction(action, cfg = DEFAULTS) {
   const calls = action.calls ?? []
-  const units = toUnits(calls)
+  const everything = toUnits(calls)
+
+  // Schema work and key-block fetches are database traffic, but they are not the
+  // application asking its own questions, and counting them makes every other
+  // number wrong in a flow recorded soon after start-up. Held out and reported,
+  // never silently dropped.
+  const units = everything.filter((u) => !INFRASTRUCTURE_KINDS.has(commandKind(u.call)))
+  const infrastructure = everything.filter((u) => INFRASTRUCTURE_KINDS.has(commandKind(u.call)))
+  const infraCallIds = new Set(infrastructure.map((u) => u.call.id))
+
   const plumbing = plumbingMethods(units)
+  const timing = classifyTiming(action)
 
   const groups = new Map()
   for (const u of units) {
@@ -663,12 +872,21 @@ export function analyzeAction(action, cfg = DEFAULTS) {
     g.firstTs = Math.min(g.firstTs, u.call.ts)
   }
 
-  const analyzed = [...groups.values()]
-    .map((g) => analyzeGroup({ ...g, apps: [...g.apps], _calls: undefined }, { ...cfg, plumbing }))
+  const raw = [...groups.values()]
+
+  // Growth is worked out before the groups are collapsed, because it needs the
+  // individual executions: their request, their timestamp and their row counts.
+  const scaling = analyzeScaling(raw, cfg)
+
+  const analyzed = raw
+    .map((g) => analyzeGroup({ ...g, apps: [...g.apps], _calls: undefined }, { ...cfg, plumbing, scaling: scaling.groups, timing }))
     .sort((a, b) => b.avoidable - a.avoidable || b.count - a.count || a.firstTs - b.firstTs)
 
+  // A static loop report pins a repeated query to the loop that runs it.
+  if (cfg.loops) for (const g of analyzed) annotateLoop(g, cfg.loops)
+
   const total = units.length
-  const roundTrips = calls.length
+  const roundTrips = calls.filter((c) => !infraCallIds.has(c.id)).length
   const crossGroupWrites = duplicateRowWrites(units, analyzed)
 
   const inRequest = analyzed.reduce((s, g) => s + g.avoidableInRequest, 0)
@@ -683,14 +901,23 @@ export function analyzeAction(action, cfg = DEFAULTS) {
     analyzed.reduce((s, g) => s + g.roundTripSavings, 0) + crossGroupWrites.roundTrips
   const totalMs = calls.reduce((s, c) => s + (c.durationMs ?? 0), 0)
 
+  // Database time the user never waited for: calls that ran past the response, or
+  // outside any request. Part of totalMs, but it did not slow the screen.
+  const offMs = calls.reduce(
+    (s, c) => s + (timing.get(c.id) !== 'waited' ? (c.durationMs ?? 0) : 0),
+    0,
+  )
+  const offCalls = units.filter((u) => timing.get(u.call.id) !== 'waited').length
+
   const actionFindings = [...crossGroupWrites.findings, ...readAfterWrite(units)]
   if ((action.saveChanges?.length ?? 0) >= 2) {
     const entities = action.saveChanges.reduce((s, e) => s + (e.entities ?? 0), 0)
 
     // A SaveChanges over an unchanged tracker issues nothing. Only the flushes
-    // that produced a command cost a transaction, so count those.
+    // that produced a command cost a transaction, so count those - and a
+    // set-based write is not one of them, it never went through the tracker.
     const flushes = new Set(
-      units.filter((u) => u.op !== 'SELECT').map((u) => u.call.id),
+      units.filter((u) => u.op !== 'SELECT' && commandKind(u.call) !== 'bulk').map((u) => u.call.id),
     ).size
 
     if (flushes >= 2) {
@@ -707,6 +934,28 @@ export function analyzeAction(action, cfg = DEFAULTS) {
       })
     }
   }
+
+  if (infrastructure.length > 0) {
+    const what = [...new Set(infrastructure.map((u) => KIND_LABEL[commandKind(u.call)]))].join(' and ')
+    actionFindings.push({
+      code: 'infrastructure-excluded',
+      level: 'low',
+      bucket: null,
+      title: `${infrastructure.length} ${what} statement${infrastructure.length === 1 ? '' : 's'} left out of the counts`,
+      detail:
+        `${infraCallIds.size} round-trip${infraCallIds.size === 1 ? '' : 's'} of schema or key-generation work. ` +
+        'Real database traffic, but not something this flow can be blamed for — usually the first ' +
+        'flow recorded after the process started.',
+      fix: '',
+      avoidable: 0,
+    })
+  }
+
+  // Which group each round-trip belongs to, for the waterfall. A batched command
+  // feeds several groups; it is drawn in the colour of the first.
+  const callGroup = new Map()
+  for (const g of raw) for (const u of g.units) if (!callGroup.has(u.call.id)) callGroup.set(u.call.id, g.id)
+  const time = analyzeTime(action, analyzed, callGroup, timing)
 
   let level = 'ok'
   for (const g of analyzed) level = worst(level, g.level)
@@ -731,7 +980,9 @@ export function analyzeAction(action, cfg = DEFAULTS) {
     requests: action.requests?.length ?? 0,
     total,
     roundTrips,
-    unique: new Set(units.map((u) => u.shape + '' + u.paramSig)).size,
+    // An execution whose values were not captured cannot be proven to be a repeat
+    // of anything, so it counts as its own.
+    unique: new Set(units.map((u, i) => `${u.shape}${SEP}${u.paramSig ?? '?' + i}`)).size,
 
     // How the summary numbers are derived, so they can be checked against the groups:
     //   avoidable = avoidableInRequest + avoidableWrites   (sum over groups)
@@ -749,17 +1000,91 @@ export function analyzeAction(action, cfg = DEFAULTS) {
     roundTripSavings,
     reducible,
     totalMs: Math.round(totalMs),
+    // waitedMs + offMs = totalMs: what the user actually waited for, and what ran
+    // after the response or in the background.
+    offMs: Math.round(offMs),
+    waitedMs: Math.max(Math.round(totalMs) - Math.round(offMs), 0),
+    offCalls,
     colour,
     level,
+
+    // How the call count grows with the data, and what was left out of it.
+    scaling: scaling.action,
+    excluded: {
+      statements: infrastructure.length,
+      roundTrips: infraCallIds.size,
+      kinds: [...new Set(infrastructure.map((u) => commandKind(u.call)))],
+    },
+    kinds: [...new Set(units.map((u) => commandKind(u.call)))],
+
+    // Where the time went, the waterfall, and what to fix first.
+    time,
+    staticLoops: analyzed.filter((g) => g.staticLoop).length,
+
     findings: actionFindings,
     groups: analyzed,
   }
+}
+
+/**
+ * Matches a group's call paths against a static loop report and, on a hit, says
+ * which loop runs it. Counts are never changed: the recording already decided how
+ * much is removable; this only says where to make the change.
+ */
+function annotateLoop(g, index) {
+  let hit = null
+  for (const p of g.callPaths ?? []) {
+    const m = index.match(p.frames)
+    if (m && (!hit || (hit.confidence !== 'exact' && m.confidence === 'exact'))) hit = m
+    if (hit?.confidence === 'exact') break
+  }
+  // A lead on a query that ran once says nothing the recording can back up.
+  if (!hit || (hit.confidence !== 'exact' && g.count < 2)) return
+
+  g.staticLoop = hit
+  const loop = hit.loops[hit.loops.length - 1]
+  const where = `${hit.shortFile}:${hit.line}`
+  const header = loop?.header ? `\`${loop.header.length > 90 ? loop.header.slice(0, 89) + '…' : loop.header}\`` : 'a loop'
+  const nested = hit.loops.length > 1 ? ` (${hit.loops.length} loops deep)` : ''
+
+  if (hit.confidence === 'exact') {
+    g.findings.push({
+      code: 'static-loop',
+      bucket: null,
+      level: g.count > 1 ? 'med' : 'low',
+      title:
+        g.count > 1
+          ? `Runs inside ${loop?.kind ?? 'a loop'} at ${where} — ${g.count}× in this click`
+          : `Sits inside ${loop?.kind ?? 'a loop'} at ${where} — ran once this time`,
+      detail:
+        `Static analysis flags this call site: ${header}${nested} reaches the database on every iteration` +
+        (hit.chain ? ` via ${hit.chain}.` : '.') +
+        (g.count > 1 ? '' : ' With more rows it runs once per row.'),
+      fix: 'Load what the loop needs before it starts (one query with an IN filter), or save once after it ends.',
+      avoidable: 0,
+    })
+  } else {
+    g.findings.push({
+      code: 'static-loop',
+      bucket: null,
+      level: 'low',
+      title: `${hit.method ?? 'This method'} has a database loop at ${where}`,
+      detail:
+        `Static analysis flags a database call in a loop ${Math.abs(hit.line - (hit.frameLine ?? hit.line))} line(s) from the ` +
+        'recorded one — most likely the same call, in a slightly different version of the code than the report was made from.',
+      fix: '',
+      avoidable: 0,
+    })
+  }
+  g.findings.sort((a, b) => LEVEL_RANK[b.level] - LEVEL_RANK[a.level])
+  g.level = worst(g.level, g.findings[0].level)
 }
 
 export function summarise(actions) {
   const sum = (field) => actions.reduce((s, a) => s + a[field], 0)
   const total = sum('total')
   const avoidable = sum('avoidable')
+  const factor = actions[0]?.scaling?.factor ?? DEFAULTS.projectionFactor
   return {
     avoidableInRequest: sum('avoidableInRequest'),
     avoidableAcrossRequests: sum('avoidableAcrossRequests'),
@@ -770,8 +1095,20 @@ export function summarise(actions) {
     projected: Math.max(total - avoidable, 0),
     reducible: pct(avoidable, total),
     totalMs: actions.reduce((s, a) => s + a.totalMs, 0),
+    offMs: actions.reduce((s, a) => s + (a.offMs ?? 0), 0),
+    offCalls: actions.reduce((s, a) => s + (a.offCalls ?? 0), 0),
     red: actions.filter((a) => a.colour === 'red').length,
     amber: actions.filter((a) => a.colour === 'amber').length,
     green: actions.filter((a) => a.colour === 'green').length,
+
+    // What the same clicks would cost against more data.
+    scaling: {
+      factor,
+      atFactor: actions.reduce((s, a) => s + (a.scaling?.projected ?? a.total), 0),
+      worstCase: actions.reduce((s, a) => s + (a.scaling?.worstCase ?? a.total), 0),
+      maxDepth: actions.reduce((s, a) => Math.max(s, a.scaling?.maxDepth ?? 0), 0),
+      unclassified: actions.reduce((s, a) => s + (a.scaling?.unclassified ?? 0), 0),
+    },
+    excludedStatements: actions.reduce((s, a) => s + (a.excluded?.statements ?? 0), 0),
   }
 }

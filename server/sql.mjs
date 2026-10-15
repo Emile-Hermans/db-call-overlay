@@ -17,7 +17,7 @@ const SCAFFOLDING = [
 ]
 
 /** Separator for composite keys; never appears in SQL or a parameter value. */
-const SEP = String.fromCharCode(1)
+export const SEP = String.fromCharCode(1)
 
 const OPS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE', 'EXEC', 'EXECUTE', 'CREATE', 'DROP', 'TRUNCATE']
 
@@ -149,6 +149,23 @@ function resolveParams(stmt, commandParams) {
 }
 
 /**
+ * Identity of one execution: what makes this run of the statement different from
+ * the next one in the same group.
+ *
+ * Captured values when there are any. When there are none, the statement text
+ * itself - a query whose keys were folded into the SQL as literals normalises to
+ * the same shape as its siblings, so an empty signature would make N reads of N
+ * different rows look like one row read N times.
+ *
+ * Returns null for "cannot tell": the statement names parameters but none of
+ * their values reached us, so comparing it with another execution proves nothing.
+ */
+function paramSigOf(stmt, resolved, referencesParams) {
+  if (resolved.length) return resolved.map((p) => p.v).join(SEP)
+  return referencesParams ? null : stmt
+}
+
+/**
  * Identity of the row(s) a write targets: the parameter values in its WHERE.
  *
  * Returns null for "cannot tell", and that distinction matters. Parameter
@@ -265,6 +282,7 @@ export function shred(rawSql, commandParams) {
     }
 
     const resolved = resolveParams(stmt, commandParams)
+    const referencesParams = /@[A-Za-z_]/.test(stmt)
     out.push({
       op,
       text: stmt,
@@ -273,8 +291,8 @@ export function shred(rawSql, commandParams) {
       tables: allTables(stmt),
       width: projectionWidth(stmt, op),
       params: resolved,
-      paramSig: resolved.map((p) => `${p.v}`).join(SEP),
-      rowKey: rowKeyOf(stmt, op, resolved, /@[A-Za-z_]/.test(stmt)),
+      paramSig: paramSigOf(stmt, resolved, referencesParams),
+      rowKey: rowKeyOf(stmt, op, resolved, referencesParams),
       setColumns: setColumnsOf(stmt, op),
       hasWhere: /\bWHERE\b/i.test(stmt),
       hasTop: /\b(TOP|OFFSET|FETCH\s+NEXT)\b/i.test(stmt),

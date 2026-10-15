@@ -29,6 +29,44 @@ export const DEFAULT_SETTINGS = {
   // Ports your API listens on. The browser extension tags calls going to these,
   // and they are what changes when someone runs the app on a different port.
   apiPorts: [1337, 2337, 3337, 4337, 11337, 12337, 13337],
+
+  // Optional: a static analysis report of loops that reach the database (a
+  // findings list or SARIF). Read in place; never copied into the data folder.
+  loopReport: '',
+
+  // What counts as slow, wide or a loop. These are judgements about a codebase
+  // rather than facts about it, so they belong to whoever is reading the report.
+  thresholds: {
+    slowMs: 200,
+    verySlowMs: 600,
+    wideCols: 30,
+    loopRoundTrips: 5,
+    nPlusOneMin: 3,
+    nPlusOneMaxParams: 4,
+    projectionFactor: 10,
+  },
+}
+
+/** Bounds for each threshold, so a typed-in value can never break the rules. */
+const THRESHOLD_LIMITS = {
+  slowMs: [1, 60000],
+  verySlowMs: [1, 60000],
+  wideCols: [1, 1000],
+  loopRoundTrips: [2, 10000],
+  nPlusOneMin: [2, 10000],
+  nPlusOneMaxParams: [1, 100],
+  projectionFactor: [2, 1000],
+}
+
+function cleanThresholds(patch) {
+  const out = { ...DEFAULT_SETTINGS.thresholds }
+  for (const [key, [min, max]] of Object.entries(THRESHOLD_LIMITS)) {
+    const value = Number(patch?.[key])
+    if (Number.isFinite(value)) out[key] = Math.min(Math.max(Math.round(value), min), max)
+  }
+  // "Very slow" below "slow" would leave a band where neither rule can fire.
+  if (out.verySlowMs < out.slowMs) out.verySlowMs = out.slowMs
+  return out
 }
 
 // --------------------------------------------------------------------- utils
@@ -65,14 +103,25 @@ function writeJson(file, value) {
 let _settings = null
 
 export function loadSettings() {
-  _settings ??= { ...DEFAULT_SETTINGS, ...(readJson(SETTINGS_FILE) ?? {}) }
+  if (!_settings) {
+    const stored = readJson(SETTINGS_FILE) ?? {}
+    _settings = {
+      ...DEFAULT_SETTINGS,
+      ...stored,
+      // A settings file written before thresholds existed has none of them.
+      thresholds: cleanThresholds(stored.thresholds),
+    }
+  }
   return _settings
 }
 
 export function saveSettings(patch) {
-  const merged = { ...loadSettings(), ...patch }
+  // A key the caller did not send keeps its stored value, rather than being wiped by `undefined`.
+  const defined = Object.fromEntries(Object.entries(patch ?? {}).filter(([, v]) => v !== undefined))
+  const merged = { ...loadSettings(), ...defined }
   merged.apiPorts = [...new Set((merged.apiPorts ?? []).map(Number).filter((p) => p > 0 && p < 65536))]
   if (!merged.apiPorts.length) merged.apiPorts = [...DEFAULT_SETTINGS.apiPorts]
+  merged.thresholds = cleanThresholds(patch?.thresholds ?? merged.thresholds)
   writeJson(SETTINGS_FILE, merged)
   _settings = merged
   return merged

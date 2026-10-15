@@ -76,6 +76,9 @@ for (const attempt of [
     'extension can still read the port list',
     `ACAO ${res.headers.get('access-control-allow-origin')}`,
   )
+  // The settings also hold a local file path (the static loop report). A page
+  // that may read the port list must not learn where the user keeps files.
+  report('loopReport' in body || 'loops' in body, 'a web page can read the loop report path', Object.keys(body).join(','))
 }
 {
   const res = await get('/api/action', {
