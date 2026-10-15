@@ -35,7 +35,13 @@ if (git status --porcelain) { throw 'There are uncommitted changes. Commit and p
 git fetch --quiet origin
 $head = git rev-parse HEAD
 if (-not (git branch -r --contains $head)) { throw 'HEAD is not on GitHub yet. Push it first.' }
-if (gh release view $tag 2>$null) { throw "Release $tag already exists. Raise <Version> in desktop\DbCallOverlay.csproj first." }
+# "release not found" on stderr is the expected answer here, and Windows PowerShell
+# turns any native stderr into a terminating error under 'Stop'.
+$ErrorActionPreference = 'Continue'
+& gh release view $tag *> $null
+$exists = $LASTEXITCODE -eq 0
+$ErrorActionPreference = 'Stop'
+if ($exists) { throw "Release $tag already exists. Raise <Version> in desktop\DbCallOverlay.csproj first." }
 
 & (Join-Path $root 'build-installer.ps1')
 $setup = Join-Path $root "dist\ClicktraceSetup-$version.exe"
