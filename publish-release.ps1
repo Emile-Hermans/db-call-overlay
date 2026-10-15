@@ -51,6 +51,8 @@ $Notes = $Notes.TrimEnd() + @'
 
 ## How to install
 
+**Works with the application running on your own computer** (a local setup of its APIs) — not with an application on a server.
+
 Download **ClicktraceSetup-VERSION.exe** below. It is not code-signed yet, so your browser and Windows warn about it and hide it — that is expected:
 
 1. **Keep the download.** *Edge:* Downloads panel → **⋯** next to the file → **Keep**, then click the small **∨ arrow next to Delete** → **Keep anyway**. *Chrome:* click the warning → **Download suspicious file**.

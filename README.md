@@ -6,6 +6,11 @@
 — one file, no git, .NET or Node.js needed. **Your browser will warn you and hide the file —
 that is expected:** see [how to download it](#how-to-download-it--your-browser-will-warn-you).
 
+> **Works with the application running on your own computer.** Clicktrace records the .NET
+> APIs started on the same machine as Clicktrace — a local development setup. It cannot see
+> an application running on a server (dev, test, acceptance or production), so opening a
+> deployed environment in your browser shows nothing.
+
 > ⚠️ **This project is fully vibecoded** — every line was written by an AI from conversational
 > prompts. See [the disclaimer](#disclaimer--this-is-fully-vibecoded) before you rely on it.
 
@@ -18,7 +23,9 @@ that caused it, says whether the click was slow because of the **database** or b
 to open**.
 
 It is aimed at whoever is clicking through the app — a tester, a developer doing a smoke test —
-not at whoever is reading a profiler.
+not at whoever is reading a profiler. Whoever it is needs the app's APIs running locally: the
+recorder attaches to processes as they start on this machine, and everything stays on
+`127.0.0.1`.
 
 ```
 Clicks 5   Queries 171 → 58   Removable 113   DB time 799 ms   At 10× data 306–1386
@@ -99,6 +106,10 @@ of any kind — that is not boilerplate here, it is the point.
 ## Install
 
 ### How to download it — your browser will warn you
+
+Before you start: Clicktrace only records an application whose APIs run **on your own
+computer**. If you don't have a local setup of the application you want to inspect, you will
+see nothing — ask a developer to set one up with you first.
 
 The setup is new and not code-signed (it has no digital publisher signature), so Windows and
 your browser don't know it yet and hide it behind a warning. That is expected — here is how
