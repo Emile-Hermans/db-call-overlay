@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The setup targets .NET Framework 4.8 on purpose: it ships with every
+       Windows 10 and 11, so the setup itself needs nothing installed and stays
+       small. Everything the app needs, including its own .NET runtime and
+       Node.js, travels inside it as payload.zip - built by build-installer.ps1. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>ClicktraceSetup</AssemblyName>
+    <RootNamespace>ClicktraceSetup</RootNamespace>
+    <ApplicationIcon>..\desktop\appicon.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Product>Clicktrace</Product>
+    <AssemblyTitle>Clicktrace Setup</AssemblyTitle>
+    <Company>Clicktrace</Company>
+    <!-- Overridden by build-installer.ps1 with the app's own version. -->
+    <Version>1.0.0</Version>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <PayloadZip Condition="'$(PayloadZip)' == ''">..\dist\stage\payload.zip</PayloadZip>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+    <Reference Include="Microsoft.CSharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="$(PayloadZip)" LogicalName="payload.zip" Condition="Exists('$(PayloadZip)')" />
+  </ItemGroup>
+
+  <Target Name="RequirePayload" BeforeTargets="BeforeBuild" Condition="!Exists('$(PayloadZip)')">
+    <Error Text="No payload at $(PayloadZip). Build the installer with build-installer.ps1, not on its own." />
+  </Target>
+
+</Project>

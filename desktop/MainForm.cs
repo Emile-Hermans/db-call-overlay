@@ -19,9 +19,9 @@ internal sealed class MainForm : Form
         _settings = settings;
         _collector = new Collector(settings);
 
-        Text = "DB Call Overlay";
+        Text = "Clicktrace";
         MinimumSize = new Size(560, 340);
-        BackColor = Color.FromArgb(0x0d, 0x11, 0x17);
+        BackColor = Color.FromArgb(0x0e, 0x0f, 0x14);
         ForeColor = Color.FromArgb(0xe6, 0xed, 0xf3);
         StartPosition = FormStartPosition.Manual;
         ShowInTaskbar = true;
@@ -100,7 +100,7 @@ internal sealed class MainForm : Form
         {
             Setup.Uninstall();
             PostShellState();
-            _tray.ShowBalloonTip(3000, "DB Call Overlay",
+            _tray.ShowBalloonTip(3000, "Clicktrace",
                 "Recording setup removed. Restart your APIs to stop them reporting.", ToolTipIcon.Info);
         }));
         menu.Items.Add(new ToolStripMenuItem("Copy probe command (advanced)", null, (_, _) => CopyProbeCommand()));
@@ -109,7 +109,7 @@ internal sealed class MainForm : Form
         menu.Items.Add(new ToolStripMenuItem("Quit", null, (_, _) => QuitForReal()));
 
         _tray.Icon = Icon;
-        _tray.Text = "DB Call Overlay";
+        _tray.Text = "Clicktrace";
         _tray.Visible = true;
         _tray.ContextMenuStrip = menu;
         _tray.DoubleClick += (_, _) => ToggleVisible();
@@ -146,7 +146,7 @@ internal sealed class MainForm : Form
             // every dotnet command on this machine. Never leave that lying around.
             if (Setup.RepairIfBroken(_collector.ProbePath()))
             {
-                _tray.ShowBalloonTip(4000, "DB Call Overlay",
+                _tray.ShowBalloonTip(4000, "Clicktrace",
                     "Recording setup pointed at a probe that no longer exists — it has been repaired.",
                     ToolTipIcon.Info);
             }
@@ -154,7 +154,7 @@ internal sealed class MainForm : Form
         catch (Exception ex)
         {
             _status.Text = "Could not start the collector.";
-            MessageBox.Show(this, ex.Message, "DB Call Overlay", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, ex.Message, "Clicktrace", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
 
@@ -173,7 +173,7 @@ internal sealed class MainForm : Form
                 this,
                 "The Microsoft Edge WebView2 runtime is required.\r\n\r\n" +
                 "Open the download page?\r\n\r\n" + ex.Message,
-                "DB Call Overlay",
+                "Clicktrace",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning);
 
@@ -286,8 +286,11 @@ internal sealed class MainForm : Form
                     type = "update",
                     state = status.Problem is not null ? "problem" : status.Available ? "available" : "current",
                     message = status.Problem
+                        ?? status.Message
                         ?? (status.Available
-                            ? $"{status.Behind} update{(status.Behind == 1 ? "" : "s")} available."
+                            ? status.Latest is not null
+                                ? $"Version {status.Latest} is available."
+                                : $"{status.Behind} update{(status.Behind == 1 ? "" : "s")} available."
                             : "You have the latest version."),
                     current = status.Current,
                     currentDate = status.CurrentDate,
@@ -315,7 +318,7 @@ internal sealed class MainForm : Form
 
         if (apply && result.state == "applied")
         {
-            // The rebuild script is waiting for this process to go away.
+            // The rebuild script (git) or the setup (installed copy) waits for this process to go away.
             await Task.Delay(1200);
             Close();
         }
@@ -360,7 +363,7 @@ internal sealed class MainForm : Form
         if (probe is null)
         {
             MessageBox.Show(this, "The probe is missing. Run build.ps1 once and reopen the app.",
-                "DB Call Overlay", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                "Clicktrace", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
@@ -372,7 +375,7 @@ internal sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, ex.Message, "DB Call Overlay", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, ex.Message, "Clicktrace", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
 
         PostShellState();
@@ -396,7 +399,7 @@ internal sealed class MainForm : Form
                 "The APIs that are running were started by Visual Studio.\r\n\r\n" +
                 "Stop and start them from Visual Studio instead (Shift+F5, then F5) — this app " +
                 "will not touch them.",
-                "DB Call Overlay", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                "Clicktrace", MessageBoxButtons.OK, MessageBoxIcon.Information);
             PostShellState();
             return;
         }
@@ -404,7 +407,7 @@ internal sealed class MainForm : Form
         var answer = MessageBox.Show(
             this,
             $"Restart {apis.Count} running API{(apis.Count == 1 ? "" : "s")} so they can be recorded?",
-            "DB Call Overlay",
+            "Clicktrace",
             MessageBoxButtons.OKCancel,
             MessageBoxIcon.Question);
 
@@ -424,7 +427,7 @@ internal sealed class MainForm : Form
             MessageBox.Show(this,
                 "Some APIs could not be restarted from here - start them the way you normally do:\r\n\r\n" +
                 string.Join("\r\n", problems),
-                "DB Call Overlay", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                "Clicktrace", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
 
         PostShellState();
@@ -501,12 +504,12 @@ internal sealed class MainForm : Form
         var probe = _collector.ProbePath();
         if (probe is null)
         {
-            MessageBox.Show(this, "Probe not built yet — run build.ps1 first.", "DB Call Overlay");
+            MessageBox.Show(this, "Probe not built yet — run build.ps1 first.", "Clicktrace");
             return;
         }
 
         Clipboard.SetText($"$env:DOTNET_STARTUP_HOOKS='{probe}'; $env:DBPROBE_APPS='WebApi.'");
-        _tray.ShowBalloonTip(2500, "DB Call Overlay",
+        _tray.ShowBalloonTip(2500, "Clicktrace",
             "Probe command copied — paste it before starting an API.", ToolTipIcon.Info);
     }
 

@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Compiles the app's real update code against a local stand-in for GitHub.
+       Run it with "dotnet run" on this project. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <!-- Plays the installed app's version. -->
+    <Version>1.1.0</Version>
+    <RootNamespace>DbCallOverlay</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\desktop\ReleaseUpdater.cs" Link="ReleaseUpdater.cs" />
+    <Compile Include="..\..\desktop\Updater.cs" Link="Updater.cs" />
+    <Compile Include="..\..\desktop\Settings.cs" Link="Settings.cs" />
+  </ItemGroup>
+
+</Project>

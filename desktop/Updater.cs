@@ -11,10 +11,14 @@ internal sealed record UpdateStatus(
     int Behind,
     string[] Changes,
     bool HasLocalChanges,
-    string? Problem);
+    string? Problem,
+    // Installed copies only: the newest released version, and a message to show as is.
+    string? Latest = null,
+    string? Message = null);
 
 /// <summary>
-/// Updates the app from the git repository it was cloned from.
+/// Updates the app from the git repository it was cloned from - or, for a copy
+/// installed with the setup, from the latest GitHub release (see ReleaseUpdater).
 ///
 /// Deliberately conservative: fast-forward only, and it refuses outright when
 /// there is local work in the tree. Losing someone's uncommitted change to make
@@ -24,10 +28,13 @@ internal static class Updater
 {
     public static UpdateStatus Check(string? repoRoot)
     {
-        if (repoRoot is null || !Directory.Exists(Path.Combine(repoRoot, ".git")))
+        // No tool folder at all: this copy came from the setup, and updates the same way.
+        if (repoRoot is null) return ReleaseUpdater.Check();
+
+        if (!Directory.Exists(Path.Combine(repoRoot, ".git")))
         {
             return new UpdateStatus(false, false, null, null, 0, [], false,
-                "This copy was not cloned with git, so it cannot update itself. Download the latest version manually.");
+                "This folder was not cloned with git, so it cannot update itself. Download ClicktraceSetup.exe from the releases page instead — your recordings are kept.");
         }
 
         var git = GitPath();
@@ -76,6 +83,8 @@ internal static class Updater
     /// </summary>
     public static (bool Ok, string Message) Apply(string? repoRoot, string exePath)
     {
+        if (repoRoot is null) return ReleaseUpdater.Apply();
+
         var status = Check(repoRoot);
 
         if (status.Problem is not null) return (false, status.Problem);
@@ -133,7 +142,7 @@ internal static class Updater
             .AppendLine("dotnet build desktop\\DbCallOverlay.csproj -c Release --nologo -v quiet")
             .AppendLine("if ($LASTEXITCODE -ne 0) {")
             .AppendLine("  Add-Type -AssemblyName System.Windows.Forms")
-            .AppendLine("  [System.Windows.Forms.MessageBox]::Show('The update was downloaded but the rebuild failed. Run Install.cmd in the tool folder.','DB Call Overlay') | Out-Null")
+            .AppendLine("  [System.Windows.Forms.MessageBox]::Show('The update was downloaded but the rebuild failed. Run Install.cmd in the tool folder.','Clicktrace') | Out-Null")
             .AppendLine("  exit 1")
             .AppendLine("}")
             .AppendLine($"Start-Process '{exePath}'")

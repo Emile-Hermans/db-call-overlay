@@ -69,11 +69,12 @@ internal sealed class Collector : IDisposable
 
         // Projects live in the tool folder, never in the build output, so that
         // rebuilding - or deleting bin\ - can never take recorded flows with it.
+        // An installed copy has no tool folder, and its own folder may not be
+        // writable - its recordings go next to the window settings instead.
         var toolRoot = ToolRoot();
-        if (toolRoot is not null)
-        {
-            info.Environment["DBPROBE_DATA"] = Path.Combine(toolRoot, "data");
-        }
+        info.Environment["DBPROBE_DATA"] = toolRoot is not null
+            ? Path.Combine(toolRoot, "data")
+            : Path.Combine(Settings.Folder, "data");
 
         _process = Process.Start(info)
             ?? throw new InvalidOperationException("Could not start the collector process.");
@@ -152,6 +153,8 @@ internal sealed class Collector : IDisposable
     {
         var candidates = new List<string>
         {
+            // The installer ships its own Node.js, so nobody has to install one.
+            Path.Combine(AppContext.BaseDirectory, "node", "node.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "nodejs", "node.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "nodejs", "node.exe"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "nodejs", "node.exe"),

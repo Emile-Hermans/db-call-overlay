@@ -1,33 +1,42 @@
-# DB Call Overlay
+# Clicktrace
 
 > ⚠️ **This project is fully vibecoded** — every line was written by an AI from conversational
 > prompts. See [the disclaimer](#disclaimer--this-is-fully-vibecoded) before you rely on it.
 
-**See which database calls every click in your app causes — and which of them are waste.**
+**Know exactly what a click does — every request, every query — and why it is slow.**
 
-A Windows desktop app that sits on top of your browser while you click through a .NET web
-application, groups every SQL statement under the button that caused it, and tells you which
-calls are redundant, why, and **which method to open** to fix them.
+*Formerly DB Call Overlay.* A Windows desktop app that sits on top of your browser while you
+click through a .NET web application. It files every request and SQL statement under the button
+that caused it, says whether the click was slow because of the **database** or because of the
+**application**, and lists the changes that buy back the most time — with **the method and line
+to open**.
 
 It is aimed at whoever is clicking through the app — a tester, a developer doing a smoke test —
 not at whoever is reading a profiler.
 
 ```
-223 calls   66 in-request   7 dup. writes   16 cross-request   150 could be   1.9 s db time
+Clicks 5   Queries 171 → 58   Removable 113   DB time 799 ms   At 10× data 306–1386
 
-▸ 🟢 OK      Open shipments tab     ShipmentsController.List          1 call     11 ms
-▾ 🔴 WASTE   Recalculate order      Every row written 2×  ·  N+1     152 → 52   372 ms
-      ┌ -50  50 OrderLines rows are written more than once
-      │      The writes come from OrderService.ResetTotals (50×)
-      │      and OrderService.PersistTotals (50×).
-      │      fix  Recalculate first, then persist once.
-      ▾ UPDATE  OrderLines  ×100  50 rows  OrderLineRepository.SaveAll · OrderLineRepository.cs:402
-      ▸ SELECT  Quotes      ×50   N+1      QuoteRepository.GetByOrderLine · QuoteRepository.cs:133
-      ▸ SELECT  Orders      ×2    identical parameters
+▸ OK      Open shipments tab    ShipmentsController.List          40 ms  28% db    1 query
+▾ WASTE   Recalculate order     Every row written 2× · N+1       480 ms  51% db  152 → 52
+    DB  Database-bound — 51% of the server time is SQL
+        243 ms of 480 ms was spent waiting on 54 database round-trips.
+
+    WHERE THE TIME WENT   ████████████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒   database 243 ms · application 237 ms
+
+    FIX FIRST
+      1  Every row of OrderLines is written 2×   OrderLineRepository.SaveAll :402   ~130 ms  −50
+      2  N+1: 50 single-key lookups of Quotes    QuoteRepository.GetByOrderLine     ~98 ms  −49
+         in loop OrderService.cs:118
+      3  Same query run 2× in one request        OrderRepository.GetById            ~6 ms   −1
+
+    WATERFALL   200 OrdersController.Recalculate  |▮▮▮▮▮▮▮▮▮▮████████▬▬▬▬▬▬▬▬▬▬▬|
+    QUERIES     ▸ UPDATE OrderLines ×100 · ▸ SELECT Quotes ×50 · ▸ SELECT Orders ×2
 ```
 
-Three levels, each unfoldable: **action** → **query group** → **every execution**, with
-timestamps, parameters, durations and the call stack that produced them.
+Three levels, each unfoldable: **click** → **query group** → **every execution**, with
+timestamps, parameters, durations and the call stack that produced them. Dark and light
+themes; it follows Windows unless you pick one.
 
 ---
 
@@ -83,20 +92,44 @@ of any kind — that is not boilerplate here, it is the point.
 
 ## Install
 
+### Without git — the setup exe
+
+Download **`ClicktraceSetup-<version>.exe`** and run it. That is all: it installs for your
+Windows account only (no administrator rights), with its own .NET runtime and Node.js, so
+nothing else has to be installed first. It adds Clicktrace to the Start menu and, if you
+want, the Desktop.
+
+- **It is not code-signed**, so Windows SmartScreen says *"Windows protected your PC"*. Click
+  **More info → Run anyway**.
+- Installs to `%LOCALAPPDATA%\Programs\Clicktrace`. Recordings and settings live in
+  `%LOCALAPPDATA%\DbCallOverlay` and survive updates and uninstalling.
+- **Update:** ⚙ Settings → **Check for updates** looks for a newer release on GitHub;
+  **Update now** downloads it, checks it against the SHA-256 published with the release,
+  and installs it over this copy — the app closes and reopens by itself. A download that
+  fails the check is deleted, never run. Or simply run a newer setup over it. **Remove:** Settings → Apps → Installed apps →
+  Clicktrace. Removing it also switches recording off if it pointed at this copy — a
+  recorder that no longer exists would otherwise stop every `dotnet` command.
+- The browser extension is in the `extension` folder next to the app.
+- Unattended: `ClicktraceSetup.exe /silent [/dir=<folder>] [/noshortcuts] [/run]`. A log is
+  written to `%TEMP%\ClicktraceSetup.log`.
+
+### From the repository
+
+
 ```
 git clone https://github.com/Emile-Hermans/db-call-overlay.git
 ```
 
 Then **double-click `Install.cmd`**.
 
-It checks the prerequisites, builds everything, and puts *DB Call Overlay* on your Desktop and
+It checks the prerequisites, builds everything, and puts *Clicktrace* on your Desktop and
 in the Start menu. `Uninstall.cmd` reverses it.
 
 ---
 
 ## Use it
 
-1. **Open DB Call Overlay.**
+1. **Open Clicktrace.**
 2. **Press "Switch recording on".** One click, once per machine. It changes nothing in your own
    code — it sets an environment variable so the recorder can attach to .NET apps as they start.
 3. **Start your API and click around.** Calls appear as you go.
@@ -175,18 +208,93 @@ between is filed under that name — which also works with no extension installe
 
 ---
 
+## Why is this click slow?
+
+Open a click and read it top to bottom. Each part answers the question the one above it raises.
+
+**1. The verdict.** One sentence on where the time went, chosen from what was measured:
+
+| Verdict | Means | So |
+|---|---|---|
+| **Database-bound** | Half or more of the server time was SQL. | Fixing queries makes this click faster. Start with *Fix first*. |
+| **Application-bound** | Most of the server time was outside the database: code, serialisation, other services, waiting on a lock. | Removing queries will not fix it. Profile the endpoint. |
+| **Mostly between requests** | The server was idle most of the time — the browser was rendering, or requests waited on each other. | Look at the front end, or at requests that could run together. |
+| **Fast** | Under 150 ms from first request to last response. | Nothing to do. |
+
+**2. Where the time went.** The wait — from the first request to the last response — split into
+database, application code and the gaps between requests. *Database* is the union of the query
+intervals inside the request windows, so queries running in parallel are not counted twice.
+Work done after the response is shown next to it, not in it: nobody waited for it.
+
+**3. Fix first.** The query groups worth changing, ranked by the time a fix would buy back:
+removable executions × their average duration. That is an **estimate** and labelled as one;
+everything else on the screen is measured. Each entry names the method and line, and clicking it
+opens that query group.
+
+**4. Waterfall.** Every request of the click on one time axis, with each query as a tick inside
+it — the picture [Sentry's trace view](https://docs.sentry.io/concepts/key-terms/tracing/) and
+the browser's network panel use. A wall of ticks is a loop. A long bar with no ticks is the
+application working on its own. Click a tick to open its query group.
+
+**5. Queries.** Every query group, worst first, each unfoldable to its findings, call paths,
+SQL and every execution — see [What it detects](#what-it-detects).
+
+Each row in the list already carries the answer to the first question: the click's wall time and
+a bar splitting it into database (violet) and application (teal), before you open anything.
+
+## Loops from static analysis
+
+A recording proves that a query ran fifty times; it cannot see the loop that made it do so. A
+static analyser sees every loop whose body reaches the database, but not which of them run, or
+how often. Together they pin a repeated query to **the loop that runs it**.
+
+Point ⚙ Settings → *Loop report* at a report file. Queries whose call site it flags get an
+**in loop** badge naming the file, line and loop header, the same in the *Fix first* list, and a
+finding that says so. Counts never change: the recording decides what is removable, the report
+only says where to make the change.
+
+Two report shapes are read, so it is not tied to one analyser:
+
+```jsonc
+// 1. A findings list (or a bare array of these objects)
+{ "findings": [ {
+    "file": "src/Shop.Orders/Services/OrderService.cs", "line": 118,
+    "method": "OrderService.ClearQuotes(Guid)",
+    "loops": [ { "kind": "foreach", "header": "foreach (var line in order.Lines)", "line": 115 } ],
+    "call": "_quotes.GetByOrderLine(line.Id)", "chain": "QuoteRepository.GetByOrderLine(Guid)",
+    "accessKind": "Read", "suppressed": false } ] }
+```
+
+2. **SARIF 2.1** — what Roslyn analysers write with `/errorlog`. Each result's first location is
+   taken as the call site and its message as the explanation.
+
+Matching is on the file's tail and the line, so a report written with repository-relative paths
+matches a recording made with absolute ones. When the report was made from a slightly different
+version of the code, a flagged call **at most 5 lines** from the recorded one in the same method
+is shown as a dashed **loop?** lead rather than a fact — and only on a query that actually
+repeated. Further away is a different call: on real recordings, a "same method" match without
+that limit was wrong far more often than right, because big methods hold several loops.
+
+The report is read where it is and re-read when the file changes, so re-running the analyser is
+enough. It is never copied into `data/`, and its path is not shared with web pages (the
+browser extension's port list is the only setting a page can read).
+
 ## What the numbers mean
 
-One number cannot describe three different problems, so the header keeps them apart:
+One number cannot describe three different problems, so the header keeps them apart. The
+tiles are *Clicks*, *Queries → after fixes*, *Removable* (split into repeats, duplicate writes
+and — when there are any — cross-request repeats), *DB time* (with *not waited*) and *At 10× data*:
 
-| Tile | Definition | What fixing it costs |
+| Term | Definition | What fixing it costs |
 |---|---|---|
-| **calls** | Every SQL statement. A batched command counts once per statement inside it. | — |
-| **in-request** | Same query + same parameters repeated **inside one request**, plus N+1 loops collapsed to one query. | A change in one method. **The real target.** |
+| **queries** (calls) | Every SQL statement. A batched command counts once per statement inside it. | — |
+| **repeats** (in-request) | Same query + same parameters repeated **inside one request**, plus N+1 loops collapsed to one query. | A change in one method. **The real target.** |
 | **dup. writes** | The same row written more than once **with the same columns** — the second write overwrites the first. Writes that set different columns are an un-batched save instead, counted in round-trips. | A change in one flow. |
 | **cross-request** | The same query in **different requests** of one action. Each request has its own `DbContext`, so loading a row once per request is normal, not waste. | Merging endpoints or a shared cache — a design decision. |
-| **could be** | `calls − in-request − dup. writes`. **Cross-request repeats are excluded.** | — |
-| **db time** | Sum of each command's duration. | — |
+| **after fixes** (could be) | `calls − in-request − dup. writes`. **Cross-request repeats are excluded.** | — |
+| **at 10× data** | What the same clicks would cost against ten times the data — see [Growth](#growth-will-this-survive-more-data). Shown as a range when a loop sits inside another loop. | Restructuring a query, not deleting one. |
+| **db time** | Sum of each command's duration. Not wall-clock time for the flow. | — |
+| **not waited** | The part of *db time* from calls that ran **after the response was already sent**, or that belong to no request at all (background work). Real database load, but it never slowed the screen. | Nothing, for speed. A **write** here is a correctness risk — see below. |
 
 Every number is derivable from the rows below it:
 
@@ -198,7 +306,17 @@ floor      = could be − cross-request           ("if endpoints were merged too
 roundTripSavings = extra round-trips a write loop could batch away. It counts
                    round-trips, not statements, so it is never part of avoidable —
                    a batched loop still performs the same number of writes.
+at 10× data      = a projection, not a measurement. Growth findings never change
+                   `avoidable`: a query that scales badly is a design risk, not a
+                   call you can delete today.
 ```
+
+> **Everything listed is a real round-trip.** EF Core has no query result cache — a
+> tracked query executes its SQL every time, even when every row it returns is already
+> tracked. The change tracker gives you the *same object*, not a free query. The one
+> exception is `Find`/`FindAsync`, which checks the tracker by key first: when it hits,
+> no command is issued, so nothing appears here. Nothing in this list is work that did
+> not happen.
 
 ### Colour
 
@@ -209,6 +327,98 @@ roundTripSavings = extra round-trips a write loop could batch away. It counts
 | 🔴 | `WASTE` | Genuinely redundant: repeats, N+1, rows saved twice |
 
 Colour is never the only signal — every row also carries the text tag.
+
+---
+
+## Growth — will this survive more data?
+
+A count on its own cannot tell you whether a query is safe. Twelve executions are fine if
+there will always be twelve, and a problem if twelve is *three parents × four children* —
+because then the number is a function of the data, and your recording only shows the data
+you happened to test with.
+
+So every query group is classified by **what drives its execution count**:
+
+| Badge | Meaning | Reading |
+|---|---|---|
+| *(none)* | Runs a set number of times whatever the data holds. | Safe. |
+| `per Orders` | Runs once per row of an earlier query. | **Linear.** Fine while that row count stays small; fatal when it does not. |
+| `per Orders × Shipments` | A loop inside a loop — a call per child, per parent. | **Multiplicative.** This is the one that runs away. |
+| `grows?` | It loops, but what drives it could not be established. | Unknown. Left out of the projection rather than guessed at. |
+
+The flow header then shows where its call count comes from:
+
+```
+cost: 1 fixed + 12 per Orders × Shipments + 3 per Orders
+      — about 151 at 10× the data, up to 1231 if every level grows
+```
+
+Two numbers, because one recording genuinely cannot tell them apart, and the difference is
+the whole question. **151** is ten times the parent collection with today's number of
+children each. **1231** is every level growing tenfold. Which one you get depends on your
+data, not on your code — the tool will not pretend to know.
+
+### How it decides
+
+Arithmetic, not a guess. A query that produced *n* rows, followed **in the same request**
+by a query that ran *n* times, is a loop over those rows; chain those and you have the
+nesting. Row counts come from the recorder's own `Read()` count, and both readings of the
+off-by-one are accepted, so a driver only has to match somewhere inside the range.
+
+**When no earlier query produced the right number of rows, nothing is claimed.** The group
+is marked `grows?` and held out of the projection, which is why an old recording — or a
+result the caller abandoned early, leaving no row count — reports honestly instead of
+inventing a growth curve. Unclassified calls are counted at today's size, so the
+projection is a floor.
+
+`⚙ project at (× data)` changes the factor. Saved flows keep their raw commands, so
+changing it re-judges everything you already recorded.
+
+---
+
+## What kind of call is it?
+
+Not every round-trip is your query, and the difference decides which advice applies. The
+recorder reads this from the data-access layer's own report of each command rather than
+guessing from the SQL:
+
+| Badge | What it is | Why it matters |
+|---|---|---|
+| *(none)* | An ordinary query. | The common case gets no badge — a word on every row says nothing. |
+| `save` | A change-tracker flush. | No direct row count exists for one, so the number comes from what the statement returned and is shown with `≈`. Each flush is its own transaction. |
+| `bulk` | A set-based write (`ExecuteUpdate` / `ExecuteDelete`) that never touches the change tracker. | Its row count is exact — and it is **never** told to "become set-based", because it already is. |
+| `raw sql` | Hand-written SQL. | The generated-query advice does not apply. |
+
+### Did the user wait for it?
+
+Every call is also placed against the response the user was waiting on, using the request's
+own recorded end time:
+
+| Badge | What it proves | Why it matters |
+|---|---|---|
+| *(none)* | Ran inside its request's window. | The user (probably) waited for it — this is the time that made the screen slow. |
+| `after response` | Started after the response was sent, or was still running when it went out. | Never slowed the screen, but it is still database load — and a **write** here cannot report failure to a user who was already told "success". That earns the `fire-and-forget-write` finding. |
+| `background` | Belongs to no HTTP request at all. | A timer, a queue, a startup task. Judged on cost only, never called fire-and-forget. |
+| `sync` | Issued through the blocking (non-async) API, per the data-access layer's own event. | Adds no database time, but the thread waits idle instead of serving other requests. |
+
+The header's **not waited** tile sums the `after response` and `background` time, so *db
+time* can be read as "what the user felt" versus "what the database did". The one honest
+limit: a fire-and-forget call that happens to **finish before** the response is
+indistinguishable from an awaited one — no runtime event says whether a task was awaited —
+so it counts as waited. The labels only claim what the timestamps prove.
+
+Because flows store raw commands, every recording you already have gets this
+classification the next time its project is opened.
+
+Two consequences worth knowing:
+
+- **Schema work and key-generation fetches are excluded from every count** — real database
+  traffic, but not something a flow can be blamed for, and they otherwise wreck the numbers
+  for the first flow recorded after a process starts. They are reported on the flow that
+  produced them and in the legend, never silently dropped.
+- **Fix text follows the actual mechanism.** "Update the entity you already have" is only
+  offered when there *was* a tracked entity; after a set-based write there is none, and
+  re-reading may be the only option.
 
 ---
 
@@ -226,8 +436,13 @@ Colour is never the only signal — every row also carries the text tag.
 | `cross-request` | med | The same rows loaded by two requests of one action |
 | `multi-savechanges` | med | `SaveChanges` ran more than once in one action |
 | `unbatched-save` | med | One row written by several separate flushes, each setting different columns — nothing is overwritten, the cost is round-trips |
+| `scales-multiplicative` | high | A loop inside a loop — the count is a product of two or more dimensions |
+| `scales-with-data` | high / med | One call per row of an earlier query. High once the loop is already wide |
+| `fire-and-forget-write` | med | A write ran after its request's response was already sent. It never slowed the screen — but if it fails, the user was already told the request succeeded. |
+| `sync-db-call` | low | Every execution of a request-bound call used the blocking (non-async) API |
 | `unfiltered-read` | med | `SELECT` with no `WHERE` and no paging |
 | `wide-select` | low | ≥ 30 columns projected — the whole entity materialised |
+| `infrastructure-excluded` | low | Schema or key-generation round-trips were left out of the counts |
 
 **Finding the code:** every query group shows the method and `file:line`, linked as a
 `vscode://` URL. The method shown is the first one *above* your data-access layer — the code
@@ -248,6 +463,7 @@ On a **flow** row:
 | | |
 |---|---|
 | ✏️ / 📝 | Write what the flow covers |
+| 📊 | **Export this flow** as a spreadsheet — one row per query |
 | ⬇ | **Export this flow** — every call in it — as JSON |
 | 🗑️ | Delete the flow |
 
@@ -256,10 +472,58 @@ On a **query-group** row:
 | | |
 |---|---|
 | 📋 | **Copy this call** as Markdown — the finding, the fix, the call paths with `file:line`, the SQL and the executions table. Paste straight into a ticket or a pull request. |
+| 📊 | Export **that one call** as a spreadsheet — one row per execution |
 | ⬇ | Download **that one call** as JSON |
 
-**Export** in the toolbar still gives you the whole session — three scopes in all: one call, one
-flow, everything.
+**Export** in the toolbar gives you the whole session as a spreadsheet, with **JSON** beside it
+for anything that has to be read by a machine. Three scopes in all — one call, one flow,
+everything — each available in both formats.
+
+The JSON session export drops the absolute source path from every stack frame: it names a
+checkout folder and usually a user account, and nothing downstream of the running app needs it.
+
+### Spreadsheet export
+
+📊 gives you a `.csv` that opens straight into Excel — **one row per query**, which is the shape
+worth having in a spreadsheet:
+
+| | |
+|---|---|
+| Sort by **Removable** | the waste, biggest first |
+| Filter **Growth levels ≥ 2** | every query whose cost is a product of two dimensions rather than a constant |
+| Filter **Verdict = WASTE** | just the red rows |
+| Pivot on **Table** | which table the flow leans on |
+
+Flow-level figures repeat on every row of that flow, which is what makes a pivot table work.
+On a query group, 📊 exports **one row per execution** instead — the drill-down, with each
+execution's timing, row counts and parameters.
+
+Four things are done for Excel specifically, and each of them is the difference between a
+spreadsheet and one unusable column:
+
+- **The file declares its own delimiter.** Excel otherwise uses the list separator of the
+  machine's locale — a semicolon across most of continental Europe, a comma in en-US — and no
+  single file can satisfy both. A leading `sep=;` line overrides the locale, so the file opens
+  identically everywhere. (Other tools show that line as a stray first row; this export is for
+  Excel.)
+- **A UTF-8 BOM**, without which Excel reads the bytes as the local ANSI codepage and mangles
+  every `×`, `≈` and accented character in the report.
+- **Every number is a whole number**, with its unit in the header (`DB time (ms)`). A decimal
+  point is a thousands separator in a comma-decimal locale, so `1.5` can silently become `15`.
+- **Values that Excel would execute are neutralised.** A cell starting with `=`, `+` or `@` is
+  run as a formula on open, and these values come out of somebody's database. A leading
+  apostrophe is added — except to negative numbers, which stay numbers.
+
+### Finding one flow among hundreds
+
+The filter bar takes free text matched against the flow label, its description, its
+endpoints, **and the tables and methods inside it** — so you can find a flow by something
+that is only visible once it is opened. Words match in any order. The chips beside it switch
+whole colours off, and `grows` narrows to flows whose call count was proven to follow the
+data.
+
+`?` beside the header tiles explains every number, how growth is decided, and the keyboard
+shortcuts.
 
 ---
 
@@ -295,6 +559,28 @@ project is opened — so old recordings benefit from rules added later.
 ⚙ holds the **API ports to record** — change these if your app runs on different ports. The
 extension picks the new list up within a minute.
 
+It also holds **when to flag something**. These are judgements about a codebase rather than
+facts about it, so they belong to whoever is reading the report:
+
+| Setting | Default | Rule it controls |
+|---|---|---|
+| slow / very slow | 200 / 600 ms | `slow` |
+| wide select | 30 columns | `wide-select` |
+| write loop | 5 round-trips | `write-loop` |
+| N+1 from | 3 lookups | `n-plus-one` |
+| N+1 max parameters | 4 | `n-plus-one` — above this a query is not a single-key lookup |
+| project at | 10× data | the growth projection |
+| loop report | *(none)* | the **in loop** badges — see [Loops from static analysis](#loops-from-static-analysis) |
+
+Saved flows keep their raw commands and are re-judged on the spot, so changing any of these
+re-scores everything you already recorded. Nothing has to be recorded again.
+
+**Parameter values** are the one recording control that is *not* a setting: the recorder
+reads `DBPROBE_PARAMS` as a process starts, so it can only be changed for apps that have
+not been started yet. ⚙ reports which way it is set rather than offering a switch that
+would not take effect. With it off, row identity is unavailable, so duplicate writes and
+repeated reads cannot be counted at all.
+
 The app's own ports (8478 window, 8477 recorder) live in
 `%LOCALAPPDATA%\DbCallOverlay\settings.json`. Changing the window port also means changing
 `COLLECTOR_ORIGIN` at the top of `extension/bridge.js`.
@@ -323,8 +609,8 @@ It is deliberately cautious:
 |---|---|
 | `desktop/` | The app: .NET WinForms shell hosting the UI in WebView2. Owns the window, tray and settings, and supervises the collector through a job object so it can never leave an orphaned `node.exe`. Closing the window ends everything it started — including a collector it merely attached to. Use **Show / hide** in the tray menu to stash it without quitting. |
 | `probe/` | The recorder: a .NET startup-hook assembly. Subscribes to the EF Core and ASP.NET `DiagnosticListener`s, capturing SQL, duration, rows and the application call stack, streamed as NDJSON over TCP. Dependency-free, never throws into the host. |
-| `server/` | Zero-dependency Node collector. `sql.mjs` shreds commands into statements, `analyze.mjs` is the rule engine, `store.mjs` groups per action, `index.mjs` serves the UI. |
-| `ui/` | The overlay page. |
+| `server/` | Zero-dependency Node collector. `sql.mjs` shreds commands into statements, `analyze.mjs` is the rule engine, `timeline.mjs` works out where a click's time went and what to fix first, `loops.mjs` reads a static loop report, `store.mjs` groups per action, `index.mjs` serves the UI. |
+| `ui/` | The app's page: one HTML file, one stylesheet built on colour tokens (dark and light), one script. No framework, no build step. |
 | `extension/` | MV3 extension for Chrome or Edge, entirely optional. `inject.js` runs in the page world; `bridge.js` runs in the extension world and is the only side allowed to reach `127.0.0.1`. |
 | `data/` | Your projects and flows. |
 
@@ -429,8 +715,26 @@ Run `node tools/security-test.mjs` against a running collector to check all of t
   mirror image with the data access at the tail instead of the head. Those are detected and the
   call site is left empty rather than naming a method that did not run the query.
 - **Row identity depends on captured parameters.** Statements whose parameters were not captured
-  are excluded from the duplicate-write counts rather than treated as writes to the same row.
-  Raise `DBPROBE_PARAM_MAX` if a very large batch is being truncated.
+  are excluded from the duplicate-write *and* duplicate-read counts rather than treated as
+  repeats of each other. Raise `DBPROBE_PARAM_MAX` if a very large batch is being truncated.
+- **A query whose keys are inlined is identified by its text.** Constants folded into the SQL
+  normalise to the same shape as their siblings and leave no parameters behind, so the
+  statement text is what distinguishes one execution from the next. Without that, N reads of
+  N different rows would be reported as one row read N times.
+- **"Waited for" is proven by timestamps, not by the code.** A call that ran past its
+  request's response, or outside any request, is provably not waited for. The reverse does
+  not hold: a fire-and-forget call that finishes *before* the response is indistinguishable
+  from an awaited one — .NET produces no event saying whether a task was awaited — so it
+  counts as waited. A request whose end was never recorded claims nothing either way.
+- **Tracked and untracked reads cannot be told apart, and are not guessed at.** `AsNoTracking`
+  changes no SQL and appears in no diagnostic event, so no read carries a tracking badge. It
+  makes no difference to any count either — tracking affects object identity, not whether a
+  query runs. Where it *is* observable is on writes, and that is what the `save` / `bulk`
+  badges say.
+- **Growth is a projection, not a measurement.** It is derived from one recording of one
+  dataset. A group whose driver cannot be established is marked `grows?` and left out of the
+  projection, so the number is a floor rather than an estimate. To *measure* growth instead,
+  record the same flow twice against datasets of different sizes and compare the two flows.
 - **A group's time is its share of each command**, since one batched command can feed several
   groups. Group times therefore add up to the flow time rather than exceeding it.
 - **EF Core is captured by default.** Set `DBPROBE_RAWSQL=on` for raw `SqlCommand` use.
@@ -446,22 +750,87 @@ Run `node tools/security-test.mjs` against a running collector to check all of t
 
 ## Development
 
+> **Run a development collector on its own ports.** A probe connects to the ingest port the
+> moment its application starts, so a collector on the default port will quietly pick up
+> whatever real application happens to be running — and a test that then writes a report to
+> disk has just written that application's recording to disk. Every test takes a port for
+> this reason.
+>
+> ```powershell
+> $env:DBPROBE_PORT=18477; $env:DBPROBE_UI_PORT=18478; $env:DBPROBE_DATA="$PWD\.testdata"
+> node server\index.mjs
+> ```
+>
+> Nothing dials 18477, so such a collector only ever sees what a test sends it.
+
 ```powershell
-node tools\selftest.mjs      # replay a synthetic action into a running collector
-node tools\analyze-test.mjs  # the rule engine and the summary arithmetic
-node tools\path-test.mjs     # source-path shortening
+node tools\selftest.mjs 18477   # replay a synthetic action into a running collector
+node tools\analyze-test.mjs     # the rule engine and the summary arithmetic
+node tools\timeline-test.mjs    # the time split, verdicts, fix-first ranking, loop report matching
+node tools\scaling-test.mjs     # growth: driver detection, nesting, and what it refuses to claim
+node tools\csv-test.mjs         # the spreadsheet export: delimiter, BOM, quoting, formula guard
+node tools\path-test.mjs        # source-path shortening
 ```
 
-`tools/extension-test.mjs` (header tagging) and `tools/ui-test.mjs` (projects and notes) need
-Playwright: `npx --package playwright node tools\ui-test.mjs`.
+`tools/extension-test.mjs` (header tagging), `tools/ui-test.mjs` (projects and notes) and
+`tools/ui-growth-test.mjs` (growth badges, spreadsheet export, filter bar, help panel,
+thresholds) need Playwright, and each takes the UI port as its last argument:
+
+```powershell
+npx --package playwright node tools\ui-test.mjs ui.png . 18478
+npx --package playwright node tools\ui-growth-test.mjs growth.png 18478 .
+npx --package playwright node tools\ui-report-test.mjs report.png 18478 .   # verdict, fix first, waterfall, loop badge, theme
+```
+
+The growth test also asserts that no flow row or query-group row has **wrapped**. Both are
+CSS grids with a fixed column list, so adding a cell without adding a column silently pushes
+the row tools onto a second line — easy to introduce and easy to miss.
 
 `tools/probetest` is a small ASP.NET Core + EF Core app that reproduces a double save and an
 N+1, used to verify the recorder end to end.
+
+### Building the setup exe
+
+```powershell
+.\build-installer.ps1            # -> dist\ClicktraceSetup-<version>.exe
+```
+
+It builds the recorder into its own folder (the one in `probe\bin` is locked while recording
+is on), publishes the app self-contained, downloads the official Node.js for Windows x64 —
+the same version as the `node` on your machine, or `-NodeVersion` — and **checks it against
+nodejs.org's SHA-256 list**, then wraps it all in `installer\`, a small .NET Framework 4.8
+setup that every Windows 10 and 11 can run as is. The version comes from
+`desktop\DbCallOverlay.csproj`. Node.js is cached in `dist\cache`; `dist\` is not tracked.
+
+### Publishing a release
+
+```powershell
+.\publish-release.ps1 -Notes "- What changed`n- Another change"
+```
+
+Raise `<Version>` in `desktop\DbCallOverlay.csproj` first. It refuses to publish uncommitted
+or unpushed code, builds the setup, and attaches it with its `.sha256` to a release tagged
+`v<version>`. Installed copies find it under *Check for updates*; the `- ` lines of the notes
+are what they show as the list of changes. `dotnet run --project tools\updatetest` checks the
+updater against a local stand-in for GitHub — no release needed.
+
+To test it without touching your own install, use a scratch folder and skip the shortcuts
+and the Installed apps entry: `ClicktraceSetup.exe /silent /dir=C:\temp\ct /noshortcuts /noregister`.
+`uninstall.ps1 -Quiet` in that folder removes it again.
 
 To work on the UI without rebuilding, run `node server\index.mjs` and open
 `http://127.0.0.1:8478`. The app serves its own copy of `ui/`, refreshed on each build.
 
 ---
+
+## Compared with
+
+| Tool | What it shares with Clicktrace | Where Clicktrace differs |
+|---|---|---|
+| [MiniProfiler](https://miniprofiler.com/dotnet/) | Per-request timings, SQL, duplicate and N+1 detection. | No code change in your app: it attaches as a startup hook. Groups by the *click*, not the request, and projects growth. |
+| [Sentry tracing](https://docs.sentry.io/product/issues/performance-issues/n-one-queries/) | A waterfall per user action, N+1 detection. | Local and offline, with every parameter value; nothing leaves the machine. |
+| Entity Framework Profiler | Named alerts: select N+1, unbounded result sets, too many calls. | Free, sits on top of the app you are clicking, and ranks fixes by time saved. |
+| Browser DevTools network panel | The request waterfall. | Sees inside each request: which queries, from which method, and which of them are waste. |
 
 ## Licence
 

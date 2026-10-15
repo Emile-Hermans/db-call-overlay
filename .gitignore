@@ -1,6 +1,8 @@
 # build output
 bin/
 obj/
+# build-installer.ps1: the setup exe, its staging folder and the cached Node.js
+dist/
 
 # recordings — yours, and they can contain real data from whatever database you
 # were testing against. Delete this line if you want to share a set of flows.
