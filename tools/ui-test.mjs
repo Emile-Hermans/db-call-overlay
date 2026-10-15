@@ -10,7 +10,11 @@ import { fileURLToPath } from 'node:url'
 const ROOT = process.argv[3] ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 const out = process.argv[2] ?? 'ui.png'
-const UI = 'http://127.0.0.1:8478'
+// Port is a parameter so a test run cannot sit on the port real probes dial.
+// A probe connects to the ingest port the moment its application starts; if that
+// is the port a test is using, the test ingests somebody's live recording.
+const UI_PORT = Number(process.argv[4] ?? 8478)
+const UI = `http://127.0.0.1:${UI_PORT}`
 
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1180, height: 900 }, deviceScaleFactor: 2 })
@@ -37,7 +41,7 @@ await page.evaluate(async () => {
   await fetch('/api/clear', { method: 'POST' })
 })
 const { execSync } = await import('node:child_process')
-execSync('node tools/selftest.mjs', { cwd: ROOT, stdio: 'ignore' })
+execSync(`node tools/selftest.mjs ${UI_PORT - 1}`, { cwd: ROOT, stdio: 'ignore' })
 
 await page.waitForFunction(() => document.querySelectorAll('.action').length >= 3, null, { timeout: 15000 })
 check(true, 'flows recorded into the project')

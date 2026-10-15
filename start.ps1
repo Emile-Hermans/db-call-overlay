@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Opens the DB Call Overlay app (building it first if needed).
+    Opens the Clicktrace app (building it first if needed).
 
 .DESCRIPTION
     The app starts and supervises the collector itself, so this is the only thing
@@ -22,4 +22,4 @@ if (-not (Test-Path $exe)) {
 }
 
 Start-Process $exe
-Write-Host 'DB Call Overlay opened.' -ForegroundColor Green
+Write-Host 'Clicktrace opened.' -ForegroundColor Green

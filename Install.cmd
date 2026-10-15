@@ -1,5 +1,5 @@
 @echo off
-REM Double-click this file to install DB Call Overlay.
+REM Double-click this file to install Clicktrace.
 REM It only wraps install.ps1 so Windows does not open the script in an editor.
 setlocal
 cd /d "%~dp0"

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Installs DB Call Overlay: checks what is needed, builds it, and puts it on the
+    Installs Clicktrace: checks what is needed, builds it, and puts it on the
     Desktop and in the Start menu.
 
 .DESCRIPTION
@@ -22,6 +22,12 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $exe = Join-Path $root 'desktop\bin\Release\net8.0-windows\DbCallOverlay.exe'
 
 $shortcuts = @(
+    (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Clicktrace.lnk')
+    (Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs\Clicktrace.lnk')
+)
+
+# The app was called DB Call Overlay before; its shortcuts are replaced, not left behind.
+$legacyShortcuts = @(
     (Join-Path ([Environment]::GetFolderPath('Desktop')) 'DB Call Overlay.lnk')
     (Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs\DB Call Overlay.lnk')
 )
@@ -31,14 +37,14 @@ function Write-Ok($text) { Write-Host "  [ok] $text" -ForegroundColor Green }
 function Write-Bad($text) { Write-Host "  [!!] $text" -ForegroundColor Red }
 
 Write-Host ''
-Write-Host '  DB Call Overlay' -ForegroundColor Cyan
-Write-Host '  ---------------' -ForegroundColor Cyan
+Write-Host '  Clicktrace' -ForegroundColor Cyan
+Write-Host '  ----------' -ForegroundColor Cyan
 Write-Host ''
 
 # ---------------------------------------------------------------- uninstall
 
 if ($Uninstall) {
-    foreach ($shortcut in $shortcuts) {
+    foreach ($shortcut in $shortcuts + $legacyShortcuts) {
         if (Test-Path $shortcut) { Remove-Item $shortcut -Force; Write-Ok "removed $(Split-Path -Leaf $shortcut)" }
     }
 
@@ -136,6 +142,8 @@ if (-not (Test-Path $exe)) { Write-Bad "expected $exe"; exit 1 }
 
 # ---------------------------------------------------------------- shortcuts
 
+foreach ($legacy in $legacyShortcuts) { if (Test-Path $legacy) { Remove-Item $legacy -Force } }
+
 $shell = New-Object -ComObject WScript.Shell
 foreach ($shortcut in $shortcuts) {
     $parent = Split-Path -Parent $shortcut
@@ -145,7 +153,7 @@ foreach ($shortcut in $shortcuts) {
     $link.TargetPath = $exe
     $link.WorkingDirectory = Split-Path -Parent $exe
     $link.IconLocation = "$exe,0"
-    $link.Description = 'Shows which database calls each click in your app causes'
+    $link.Description = 'Clicktrace - what every click in your app costs the database, and why it is slow'
     $link.Save()
 }
 Write-Ok 'shortcut on the Desktop and in the Start menu'
@@ -156,7 +164,7 @@ Write-Host ''
 Write-Host '  Installed.' -ForegroundColor Green
 Write-Host ''
 Write-Host '  Next:'
-Write-Host '    1. Open DB Call Overlay from the Desktop.'
+Write-Host '    1. Open Clicktrace from the Desktop.'
 Write-Host '    2. Press "Switch recording on" - that is the only setup.'
 Write-Host '    3. Start your API, click around, watch the calls appear.'
 Write-Host ''

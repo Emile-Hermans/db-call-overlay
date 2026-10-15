@@ -11,10 +11,10 @@
     <RootNamespace>DbCallOverlay</RootNamespace>
     <ApplicationIcon>appicon.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Product>DB Call Overlay</Product>
-    <AssemblyTitle>DB Call Overlay</AssemblyTitle>
-    <Company>DB Call Overlay</Company>
-    <Version>1.0.0</Version>
+    <Product>Clicktrace</Product>
+    <AssemblyTitle>Clicktrace</AssemblyTitle>
+    <Company>Clicktrace</Company>
+    <Version>1.1.0</Version>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <!-- The WebView2 package ships a WPF wrapper we never load; its WindowsBase
@@ -25,6 +25,13 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
   </ItemGroup>
+
+  <!-- The icon is generated, not checked in. Regenerate it whenever the generator
+       changes, so every way of building (build.ps1, Install.cmd, the in-app updater)
+       picks up a new design instead of keeping whatever icon was there before. -->
+  <Target Name="GenerateAppIcon" BeforeTargets="BeforeBuild" Inputs="..\tools\make-icon.mjs" Outputs="appicon.ico">
+    <Exec Command="node &quot;$(MSBuildProjectDirectory)\..\tools\make-icon.mjs&quot;" ContinueOnError="true" />
+  </Target>
 
   <!-- The collector and the UI ship next to the exe so the built app is self-contained. -->
   <ItemGroup>

@@ -9,12 +9,24 @@ const OUT = path.join(HERE, '..', 'desktop', 'appicon.ico')
 const SIZES = [16, 24, 32, 48, 64, 128, 256]
 const SS = 4 // supersampling factor
 
-const BG = [0x16, 0x1b, 0x22]
-const EDGE = [0x30, 0x36, 0x3d]
+// The Clicktrace mark, on the same 24-unit grid as ui/logo.svg: a violet tile,
+// three staggered bars (a waterfall) and the cursor that started it.
+const GRADIENT_FROM = [0x7c, 0x66, 0xff]
+const GRADIENT_TO = [0x3e, 0x2b, 0xc4]
+const WHITE = [0xff, 0xff, 0xff]
 const BARS = [
-  { colour: [0xf8, 0x51, 0x49], width: 0.78 }, // red
-  { colour: [0xd2, 0x99, 0x22], width: 0.56 }, // amber
-  { colour: [0x3f, 0xb9, 0x50], width: 0.34 }, // green
+  { x: 5, y: 5.5, w: 9, opacity: 1 },
+  { x: 9, y: 10.5, w: 10, opacity: 0.8 },
+  { x: 13, y: 15.5, w: 6, opacity: 0.6 },
+]
+const CURSOR = [
+  [4.6, 12.4],
+  [4.6, 20.8],
+  [6.9, 18.6],
+  [8.5, 21.9],
+  [10.1, 21.1],
+  [8.5, 17.9],
+  [11.7, 17.9],
 ]
 
 /** Signed distance to a rounded rectangle, negative inside. */
@@ -24,27 +36,29 @@ function roundedRect(x, y, left, top, right, bottom, radius) {
   return Math.hypot(cx, cy) - radius
 }
 
-function shade(x, y, s) {
-  const inset = s * 0.02
-  const outer = roundedRect(x, y, inset, inset, s - inset, s - inset, s * 0.22)
-  if (outer > 0) return null
-
-  // subtle lighter rim
-  let colour = outer > -s * 0.035 ? EDGE : BG
-
-  const padX = s * 0.17
-  const barH = s * 0.135
-  const gap = s * 0.075
-  const totalH = BARS.length * barH + (BARS.length - 1) * gap
-  let barTop = (s - totalH) / 2
-
-  for (const bar of BARS) {
-    const right = padX + (s - 2 * padX) * bar.width
-    const d = roundedRect(x, y, padX, barTop, right, barTop + barH, barH / 2)
-    if (d <= 0) colour = bar.colour
-    barTop += barH + gap
+function inPolygon(x, y, points) {
+  let inside = false
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const [xi, yi] = points[i]
+    const [xj, yj] = points[j]
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside
   }
+  return inside
+}
 
+const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t))
+
+function shade(px, py, s) {
+  // Work in the 24-unit design space.
+  const x = (px / s) * 24
+  const y = (py / s) * 24
+  if (roundedRect(x, y, 0, 0, 24, 24, 6) > 0) return null
+
+  let colour = mix(GRADIENT_FROM, GRADIENT_TO, (x + y) / 48)
+  for (const bar of BARS) {
+    if (roundedRect(x, y, bar.x, bar.y, bar.x + bar.w, bar.y + 3, 1.5) <= 0) colour = mix(colour, WHITE, bar.opacity)
+  }
+  if (inPolygon(x, y, CURSOR)) colour = WHITE
   return colour
 }
 

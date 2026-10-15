@@ -7,7 +7,6 @@ const details = new Map() // actionId -> analysed detail
 const signatures = new Map() // actionId -> "total:avoidable:ms", to know when to refetch
 
 let state = null
-let repoRoot = null
 let setup = null // recording setup status, pushed by the desktop shell
 
 // The desktop shell, when the page is hosted by it rather than a browser tab.
@@ -26,6 +25,23 @@ const clock = (t) => new Date(t).toLocaleTimeString('nl-BE', { hour12: false })
 
 const TAG = { red: 'WASTE', amber: 'REVIEW', green: 'OK' }
 
+const PRODUCT = 'Clicktrace'
+
+/** Line icons, inline so the app works offline. 16×16, filled with currentColor. */
+const ICON = {
+  note: '<svg viewBox="0 0 16 16"><path d="M11.3 1.7a1.5 1.5 0 0 1 2.1 0l.9.9a1.5 1.5 0 0 1 0 2.1L6 13l-3.6.9.9-3.6zm-7 9.2-.4 1.5 1.5-.4 6.6-6.6-1.1-1.1z"/></svg>',
+  noted: '<svg viewBox="0 0 16 16"><path d="M3 1.5h7l3 3v10H3zm1.5 1.5v10h7V5.2L9.3 3zM6 7h4v1.2H6zm0 2.5h4v1.2H6z"/></svg>',
+  download: '<svg viewBox="0 0 16 16"><path d="M7.3 1.5h1.4v7.3l2.5-2.5 1 1L8 11.5 3.8 7.3l1-1 2.5 2.5zM2.5 12.5h11V14h-11z"/></svg>',
+  trash: '<svg viewBox="0 0 16 16"><path d="M6 1.5h4l.5 1H14V4H2V2.5h3.5zM3.3 5h9.4l-.7 9.5H4zm2.2 1.5.3 6.5h1.1l-.2-6.5zm3.8 0-.2 6.5h1.1l.3-6.5z"/></svg>',
+  copy: '<svg viewBox="0 0 16 16"><path d="M5 1.5h8.5V11H12V3H5zM2.5 4.5H10v10H2.5zM4 6v7h4.5V6z"/></svg>',
+}
+
+/** Time of day for a row: the click happened "at 14:02:31". */
+const when = (t) => (t ? clock(t) : '')
+
+/** Joins parts of a composite key; never appears in SQL or a parameter value. */
+const SEP = String.fromCharCode(1)
+
 function editorLink(frame) {
   // `a` is the path as the probe saw it; `f` is the shortened one we display.
   const full = frame?.a ?? (/^[a-zA-Z]:[\\/]/.test(frame?.f ?? '') ? frame.f : null)
@@ -40,22 +56,169 @@ function frameHtml(frame) {
   return `<b>${esc(frame.m)}</b>${location}`
 }
 
+// ------------------------------------------------------------------- filter
+
+// A long session runs to hundreds of flows. Without this the only way to find
+// the one you just clicked is to scroll.
+const filter = { text: '', colours: new Set(['red', 'amber', 'green']), grows: false }
+
+function matchesFilter(a) {
+  if (filter.grows && !(a.scaling?.maxDepth > 0)) return false
+  if (!filter.colours.has(a.colour)) return false
+  if (!filter.text) return true
+
+  // Everything a flow can be recognised by, including what is only visible once
+  // it is opened - the point is to find a flow without having to open all of them.
+  const haystack = [
+    a.label,
+    a.note,
+    ...(a.endpoints ?? []),
+    ...(a.tables ?? []),
+    ...(a.methods ?? []),
+    ...(a.topFindings ?? []).map((f) => f.title),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+
+  // Every word has to appear somewhere, in any order.
+  return filter.text.split(/\s+/).every((word) => haystack.includes(word))
+}
+
+function paintFilter(s, visible) {
+  const active = filter.text || filter.grows || filter.colours.size < 3
+  const count = document.getElementById('filterCount')
+
+  count.textContent = active ? `${visible.length} of ${s.items.length}` : ''
+  document.getElementById('filterClear').hidden = !active
+  document.getElementById('filterbar').hidden = s.items.length === 0
+  document.getElementById('noMatches').hidden = !(active && s.items.length > 0 && visible.length === 0)
+
+  const loopNote = document.getElementById('loopNote')
+  const withLoops = s.items.filter((i) => i.staticLoops > 0).length
+  loopNote.hidden = !s.loops?.configured
+  if (s.loops?.configured) {
+    loopNote.className = 'note loops'
+    loopNote.textContent = s.loops.error
+      ? 'loop report: unreadable'
+      : `loop report: ${withLoops} click${withLoops === 1 ? '' : 's'} with a flagged loop`
+    loopNote.title = s.loops.error
+      ? `The static analysis report could not be read: ${s.loops.error}`
+      : `${s.loops.findings} database calls in loops in the static analysis report. Queries whose call site it flags carry an "in loop" badge.`
+  }
+
+  const excluded = document.getElementById('excludedNote')
+  excluded.hidden = !s.excludedStatements
+  if (s.excludedStatements) {
+    excluded.textContent = `${s.excludedStatements} schema / key-generation statements excluded`
+    excluded.title =
+      'Schema work and key-block fetches are real database traffic, but not something a flow can be ' +
+      'blamed for. They are left out of every count and listed on the flow that produced them.'
+  }
+}
+
+const filterText = document.getElementById('filterText')
+
+filterText.addEventListener('input', () => {
+  filter.text = filterText.value.trim().toLowerCase()
+  lastRows = ''
+  render()
+})
+
+document.querySelector('#filterbar .chips').addEventListener('click', (event) => {
+  const chip = event.target.closest('.chip')
+  if (!chip) return
+
+  if (chip.dataset.colour === 'grows') {
+    filter.grows = !filter.grows
+  } else if (filter.colours.has(chip.dataset.colour)) {
+    filter.colours.delete(chip.dataset.colour)
+  } else {
+    filter.colours.add(chip.dataset.colour)
+  }
+
+  chip.classList.toggle('on')
+  lastRows = ''
+  render()
+})
+
+document.getElementById('filterClear').addEventListener('click', () => {
+  filter.text = ''
+  filter.grows = false
+  filter.colours = new Set(['red', 'amber', 'green'])
+  filterText.value = ''
+  for (const chip of document.querySelectorAll('#filterbar .chip')) {
+    chip.classList.toggle('on', chip.dataset.colour !== 'grows')
+  }
+  lastRows = ''
+  render()
+})
+
 // ------------------------------------------------------------------- header
 
+/**
+ * The scaling tile. Two readings, because one recording genuinely cannot tell
+ * them apart: the count if only the outer collection grows, and the count if
+ * every level of a nested loop grows with it. Showing one number would be
+ * claiming to know which, and the difference is the entire question.
+ */
+function paintScaleTile(s) {
+  const scaling = s.scaling ?? {}
+  const tile = document.getElementById('scaleTile')
+  const value = document.getElementById('tScale')
+  const label = document.getElementById('tScaleLabel')
+  const factor = scaling.factor ?? 10
+
+  label.textContent = `At ${factor}× data`
+  tile.classList.toggle('warn', scaling.maxDepth === 1)
+  tile.classList.toggle('bad', scaling.maxDepth >= 2)
+
+  if (!s.total) {
+    value.textContent = '0'
+    tile.title = 'What the same clicks would cost against more data.'
+    return
+  }
+
+  const nested = scaling.maxDepth >= 2 && scaling.worstCase > scaling.atFactor
+  value.textContent = nested ? `${scaling.atFactor}–${scaling.worstCase}` : String(scaling.atFactor ?? s.total)
+
+  tile.title =
+    `${s.total} calls today.\n` +
+    `About ${scaling.atFactor} at ${factor}× the data.\n` +
+    (nested
+      ? `Up to ${scaling.worstCase} if every level of the nested loops grows by ${factor}× as well.\n`
+      : '') +
+    (scaling.maxDepth >= 2
+      ? '\nA loop sits inside another loop, so part of this count is a product of two dimensions rather than a constant.'
+      : scaling.maxDepth === 1
+        ? '\nSome queries run once per row. That is linear: fine while the row count stays small.'
+        : '\nNothing was proven to grow with the data.') +
+    (scaling.unclassified
+      ? `\n\n${scaling.unclassified} loop${scaling.unclassified === 1 ? '' : 's'} could not be classified and ` +
+        `${scaling.unclassified === 1 ? 'is' : 'are'} left out of both numbers.`
+      : '')
+}
+
 function paintTotals(s) {
+  document.getElementById('tFlows').textContent = s.items.length
+  document.getElementById('tAvoid').textContent = s.avoidable ?? 0
   document.getElementById('tCalls').textContent = s.total
   document.getElementById('tInReq').textContent = s.avoidableInRequest ?? 0
   document.getElementById('tWrites').textContent = s.avoidableWrites ?? 0
   document.getElementById('tAcross').textContent = s.avoidableAcrossRequests ?? 0
+  // Usually zero, and a design question rather than a fix when it is not.
+  document.getElementById('tAcrossWrap').hidden = !s.avoidableAcrossRequests
   document.getElementById('tProjected').textContent = s.projected
   document.getElementById('tMs').textContent = ms(s.totalMs)
+  document.getElementById('tOffMs').textContent = ms(s.offMs ?? 0)
   document.getElementById('tRed').textContent = s.red
   document.getElementById('tAmber').textContent = s.amber
   document.getElementById('tGreen').textContent = s.green
+  paintScaleTile(s)
 
-  const apps = s.apps.map((a) => a.app.replace(/^WebApi\./, '')).join(', ')
+  const apps = s.apps.map((a) => a.app).join(', ')
   document.getElementById('apps').textContent =
-    (apps ? `${apps}` : 'waiting for a probe…') +
+    (s.recording ? (apps ? `Recording ${apps}` : 'Waiting for an API…') : 'Paused') +
     (s.manual ? ` · marker: ${s.manual}` : '') +
     (s.dropped ? ` · ${s.dropped} events dropped` : '')
 
@@ -65,43 +228,85 @@ function paintTotals(s) {
 
 // -------------------------------------------------------------- action rows
 
+/** The flow's growth, if any was proven, as one chip next to its call count. */
+function flowGrowth(a) {
+  const s = a.scaling
+  if (!s || !s.maxDepth) return '<span class="growth"></span>'
+
+  const nested = s.maxDepth >= 2 && s.worstCase > s.projected
+  const text = nested ? `${s.factor}× &rarr; ${s.projected}–${s.worstCase}` : `${s.factor}× &rarr; ${s.projected}`
+  const why = nested
+    ? `${a.total} calls today. About ${s.projected} at ${s.factor}× the data, and up to ${s.worstCase} if every level of the nested loops grows too.\n\nGrows with: ${s.dimensions.join(', ')}`
+    : `${a.total} calls today, about ${s.projected} at ${s.factor}× the data — one call per row, so it grows in step with the data.\n\nGrows with: ${s.dimensions.join(', ')}`
+
+  return `<span class="growth ${nested ? 'bad' : 'warn'}" title="${esc(why)}">${text}</span>`
+}
+
+/**
+ * The time cell: how long the user waited for this click, and a bar splitting
+ * that wait into SQL and everything else. The question a slow row raises is
+ * "is it the database?", so the row answers it before it is opened.
+ */
+function rowTime(a) {
+  const wall = a.wallMs ?? a.durationMs ?? 0
+  if (a.serverMs == null || a.dbShare == null) {
+    return `<span class="rowtime" title="Database time ${esc(ms(a.totalMs))}. The requests never reported their end, so the wait cannot be split.">
+      <span class="wall">${ms(a.totalMs)}<small>db</small></span>
+      <span class="timebar"><i class="db" style="width:100%"></i></span>
+    </span>`
+  }
+  const db = a.dbShare
+  const why =
+    `The user waited ${ms(wall)} from the first request to the last response.
+` +
+    `${db}% of the server time was SQL, ${100 - db}% application code.` +
+    (a.offMs ? `
+${ms(a.offMs)} more database time ran after the response or in the background.` : '')
+  return `<span class="rowtime" title="${esc(why)}">
+      <span class="wall">${ms(wall)}<small>${db}% db</small></span>
+      <span class="timebar"><i class="db" style="width:${db}%"></i><i class="app" style="width:${100 - db}%"></i></span>
+    </span>`
+}
+
 function actionRow(a) {
-  const pctOf = (n) => (a.total > 0 ? Math.round(((n ?? 0) / a.total) * 100) : 0)
-  const wastePct = pctOf(a.avoidable)
-  const acrossPct = pctOf(a.avoidableAcrossRequests)
   const findings = a.topFindings.map((f) => f.title).join(' · ')
   const sub = findings || a.endpoints.join(', ') || '—'
 
   const breakdown =
-    `${a.total} calls\n` +
-    `${a.avoidableInRequest ?? 0} repeated inside one request\n` +
-    `${a.avoidableWrites ?? 0} rows written more than once\n` +
-    `${a.avoidableAcrossRequests ?? 0} repeated across requests (architectural — not counted)\n` +
+    `${a.total} calls
+` +
+    `${a.avoidableInRequest ?? 0} repeated inside one request
+` +
+    `${a.avoidableWrites ?? 0} rows written more than once
+` +
+    `${a.avoidableAcrossRequests ?? 0} repeated across requests (architectural — not counted)
+` +
     `= ${a.projected} could be`
 
-  const noteTitle = a.note ? `Description:\n${a.note}` : 'Describe what this flow covers'
+  const noteTitle = a.note ? `Description:
+${a.note}` : 'Describe what this click covers'
 
   return `
     <div class="action ${a.colour} ${open.has(a.id) ? 'open' : ''}" data-id="${esc(a.id)}">
       <div class="arow" role="button" tabindex="0" aria-expanded="${open.has(a.id)}">
         <span class="chev">&#9656;</span>
         <span class="tag ${a.colour}">${TAG[a.colour]}</span>
-        <span class="label" title="${esc(a.label)}">${esc(a.label)}</span>
-        <span class="sub" title="${esc(sub)}">${esc(sub)}</span>
-        <span class="bar" title="${esc(breakdown)}">
-          <i style="width:${wastePct}%"></i><i class="soft" style="width:${acrossPct}%"></i>
+        <span class="rowmain">
+          <span class="label" title="${esc(a.label)}">${esc(a.label)}<span class="when">${when(a.startedAt)}</span></span>
+          <span class="sub" title="${esc(sub)}">${esc(sub)}</span>
         </span>
+        ${rowTime(a)}
         <span class="nums" title="${esc(breakdown)}">
-          <b>${a.total}</b> call${a.total === 1 ? '' : 's'}
-          ${a.avoidable ? `<span class="to">&rarr;</span> <b class="save">${a.projected}</b>` : ''}
+          <b>${a.total}</b> quer${a.total === 1 ? 'y' : 'ies'}
+          ${a.avoidable ? `<span class="to">&rarr;</span><b class="save">${a.projected}</b>` : ''}
         </span>
-        <span class="ms">${ms(a.totalMs)}</span>
+        ${flowGrowth(a)}
         <span class="rowtools">
-          <button class="note ${a.note ? 'has-note' : ''}" data-act="note" title="${esc(noteTitle)}">
-            ${a.note ? '&#128221;' : '&#9998;'}
+          <button class="note ${a.note ? 'has-note' : ''}" data-act="note" title="${esc(noteTitle)}" aria-label="Describe">
+            ${a.note ? ICON.noted : ICON.note}
           </button>
-          <button data-act="export-flow" title="Export this whole flow — every call in it — as JSON">&#11015;</button>
-          <button class="del" data-act="delete" title="Delete this flow">&#128465;</button>
+          <button data-act="export-menu" title="Export this whole click — as a spreadsheet (CSV) or as JSON" aria-label="Export">${ICON.download}</button>
+          <button class="del" data-act="delete" title="Delete this click" aria-label="Delete">${ICON.trash}</button>
         </span>
       </div>
       <div class="detail" ${open.has(a.id) ? '' : 'hidden'}></div>
@@ -176,14 +381,22 @@ function render() {
   paintProject(state)
   paintEmptyState(state)
 
-  const rows = state.items.map(actionRow).join('')
-  if (rows === lastRows) return
-  lastRows = rows
+  const visible = state.items.filter(matchesFilter)
+  paintFilter(state, visible)
 
-  const scroll = list.scrollTop
-  list.innerHTML = rows
-  list.scrollTop = scroll
+  const rows = visible.map(actionRow).join('')
+  if (rows !== lastRows) {
+    lastRows = rows
+    const scroll = list.scrollTop
+    list.innerHTML = rows
+    list.scrollTop = scroll
+    // The button the menu was opened from no longer exists after a repaint.
+    closeExportMenu()
+  }
 
+  // Outside the row diff on purpose. Row counts and durations arrive after the
+  // statement they belong to, and they change what an open row shows without
+  // changing the row itself - so an early return here would strand them.
   for (const id of open) {
     const detail = details.get(id)
     if (detail) paintDetail(id, detail)
@@ -233,6 +446,96 @@ function siteTooltip(g) {
   return lines.join('\n')
 }
 
+/**
+ * What kind of database work this was, from the data-access layer's own report
+ * rather than guessed from the SQL.
+ *
+ * An ordinary query gets no badge, and neither does a command whose source was
+ * not reported. Labelling the common case would put a word on nearly every row
+ * that says nothing, and crowd out the one that does.
+ */
+const KIND_TEXT = {
+  save: [
+    'save',
+    'A change-tracker flush. There is no direct row count for one, so the number is taken from what the statement returned and shown with ≈',
+  ],
+  bulk: ['bulk', 'A set-based write that never goes through the change tracker. Its row count is exact'],
+  rawsql: ['raw sql', 'Hand-written SQL rather than a generated query'],
+  mixed: ['mixed', 'This group holds more than one kind of command'],
+}
+
+function kindPill(g) {
+  const found = KIND_TEXT[g.kind]
+  if (!found) return ''
+  const [text, why] = found
+  return `<span class="pill kind k-${esc(g.kind)}" title="${esc(why)}">${esc(text)}</span>`
+}
+
+/**
+ * Did the user actually wait for these calls? A call that ran after the response
+ * was sent, or outside any request, is still database load — but it never slowed
+ * the screen, and a failure in it is invisible to whoever clicked.
+ */
+const TIMING_TEXT = {
+  afterResponse: [
+    'after response',
+    'Ran after the HTTP response was already sent. The user never waited for it — it did not slow ' +
+      'the screen, but it is still database load, and if it fails the user was already told the ' +
+      'request succeeded.',
+  ],
+  background: [
+    'background',
+    'Belongs to no HTTP request — background work such as a timer, a queue or a startup task.',
+  ],
+}
+
+function timingPill(g) {
+  const t = g.timing
+  const out = []
+  for (const [key, [text, why]] of Object.entries(TIMING_TEXT)) {
+    const n = t?.[key] ?? 0
+    if (!n) continue
+    // A partial count means the group mixes waited and unwaited executions.
+    const suffix = n < g.count ? ` ×${n}` : ''
+    out.push(`<span class="pill timing t-${esc(key)}" title="${esc(why)}">${esc(text)}${suffix}</span>`)
+  }
+  if (g.sync && (g.timing?.waited ?? 0) > 0) {
+    out.push(
+      `<span class="pill timing t-sync" title="Executed with the blocking (non-async) API — the thread waits idle for the database instead of returning to the pool.">sync</span>`,
+    )
+  }
+  return out.join('')
+}
+
+/**
+ * Whether this group's execution count is a constant or a function of the data.
+ * The whole point of the badge is that "×12" alone cannot tell you which.
+ */
+function growthPill(g) {
+  const s = g.scaling
+  if (!s) return ''
+
+  if (s.depth === null) {
+    return `<span class="pill scale unknown" title="This runs ${s.executions}× from a loop, but no query in the same request produced ${s.executions} rows, so what drives it could not be established. Usually means the driving result was not read to the end, leaving no row count.">grows?</span>`
+  }
+  if (s.depth === 0) return ''
+
+  const chain = s.chain.join(' × ')
+  const why =
+    s.depth === 1
+      ? `One call per ${chain} row. Today that is ${s.executions}; twice the ${chain} rows is twice the calls.`
+      : `A loop inside a loop: ${chain}. Today that is ${s.executions} calls, and it is a product of ${s.depth} levels — if both grow, it grows by the square.`
+
+  return `<span class="pill scale d${s.depth}" title="${esc(why)}">per ${esc(chain)}</span>`
+}
+
+/** The static analysis report's say on this group, when it has one. */
+function loopPill(g) {
+  const l = g.staticLoop
+  if (!l) return ''
+  return `<span class="pill loop${l.confidence === 'exact' ? '' : ' lead'}" title="${esc(loopTitle(l))}">${l.confidence === 'exact' ? 'in loop' : 'loop?'}</span>`
+}
+
 function groupRow(actionId, g) {
   const key = `${actionId}::${g.id}`
   const isOpen = openGroups.has(key)
@@ -257,11 +560,12 @@ function groupRow(actionId, g) {
         </span>
         <span class="count ${g.avoidable ? 'bad' : g.avoidableAcrossRequests ? 'soft' : ''}">&times;${g.count}</span>
         <span class="sub">${uniqueText}</span>
+        <span class="badges">${loopPill(g)}${kindPill(g)}${growthPill(g)}${timingPill(g)}</span>
         <span class="site" title="${esc(siteTooltip(g))}">${site}</span>
         <span class="ms">${ms(g.totalMs)}</span>
         <span class="rowtools">
-          <button data-act="copy-call" title="Copy this call as text — finding, fix, call paths, SQL and executions">&#128203;</button>
-          <button data-act="save-call" title="Download this call as JSON">&#11015;</button>
+          <button data-act="copy-call" title="Copy this call as text — finding, fix, call paths, SQL and executions" aria-label="Copy">${ICON.copy}</button>
+          <button data-act="export-menu" title="Export this call — as a spreadsheet (CSV) or as JSON" aria-label="Export">${ICON.download}</button>
         </span>
       </div>
       <div class="gdetail" ${isOpen ? '' : 'hidden'}>${isOpen ? groupBody(g) : ''}</div>
@@ -289,24 +593,38 @@ function groupBody(g) {
         .join('')
     : ''
 
+  // Duplicates are tracked per request, because that is the line the analysis
+  // draws: a repeat inside one request is waste, the same query in the next
+  // request is a separate unit of work. Marking both the same way would have the
+  // table contradicting the finding printed directly above it.
   const seen = new Map()
   let previousCall = null
 
   const rows = g.executions
     .map((e, i) => {
-      const sig = (e.params ?? []).map((p) => p.v).join('|')
+      const req = e.reqId ?? '(no request)'
+      const sig = req + SEP + (e.params ?? []).map((p) => p.v).join('|')
       const first = seen.get(sig)
       if (first === undefined) seen.set(sig, i)
-      const dupe = first !== undefined
+      // Nothing can be said about an execution whose values were not captured.
+      const comparable = (e.params ?? []).length > 0 || !/@[A-Za-z_]/.test(e.sql ?? '')
+      const dupe = first !== undefined && comparable
 
       // Several statements can share one round-trip; only the first carries its cost.
       const sameTrip = e.id === previousCall
       previousCall = e.id
-      const took = sameTrip
-        ? '<span class="sub" title="same round-trip as the row above">&#8627;</span>'
-        : e.durationMs
-          ? Math.round(e.durationMs) + ' ms'
-          : '—'
+      const offMark =
+        e.timing === 'afterResponse'
+          ? ' <span class="offmark" title="Ran after the response was already sent — the user did not wait for this call.">after</span>'
+          : e.timing === 'background'
+            ? ' <span class="offmark" title="Belongs to no HTTP request — background work.">bg</span>'
+            : ''
+      const took =
+        (sameTrip
+          ? '<span class="sub" title="same round-trip as the row above">&#8627;</span>'
+          : e.durationMs
+            ? Math.round(e.durationMs) + ' ms'
+            : '—') + offMark
       // Reads report rows read; writes report rows written. For a tracked EF save
       // that number is inferred from the rows its OUTPUT/RETURNING clause gives back.
       const isWrite = g.op !== 'SELECT'
@@ -355,12 +673,188 @@ function groupBody(g) {
     </table>`
 }
 
+// ------------------------------------------------------------- click report
+
+const VERDICT_ICON = { db: 'DB', app: '{ }', gaps: '⋯', fast: '✓', unknown: '?' }
+
+function verdictHtml(t) {
+  const v = t?.verdict
+  if (!v) return ''
+  return `
+    <div class="verdict k-${esc(v.kind)}">
+      <span class="vicon" aria-hidden="true">${VERDICT_ICON[v.kind] ?? '•'}</span>
+      <div><div class="vt">${esc(v.title)}</div><div class="vd">${esc(v.detail)}</div></div>
+    </div>`
+}
+
+/** The wait, split three ways. Every number here is measured, so it is shown plainly. */
+function splitHtml(t, d) {
+  if (!t || t.serverMs == null || !t.wallMs) return ''
+  const part = (n) => Math.max((n / t.wallMs) * 100, 0)
+  const seg = (cls, n, label) =>
+    n > 0 ? `<i class="${cls}" style="width:${part(n)}%" title="${esc(label)}: ${ms(n)}"></i>` : ''
+  return `
+    <div class="split">
+      <div class="section-title">Where the time went <span class="sub">${ms(t.wallMs)} from first request to last response</span></div>
+      <div class="splitbar">
+        ${seg('db', t.dbMs, 'Database')}${seg('app', t.appMs, 'Application code')}${seg('idle', t.idleMs, 'Between requests')}
+      </div>
+      <div class="splitlegend">
+        <span><i class="sw db"></i>Database <b>${ms(t.dbMs)}</b></span>
+        <span><i class="sw app"></i>Application code <b>${ms(t.appMs)}</b></span>
+        ${t.idleMs > 0 ? `<span title="Time with no request running: the browser rendering, or waiting before the next request"><i class="sw idle"></i>Between requests <b>${ms(t.idleMs)}</b></span>` : ''}
+        ${d.offMs ? `<span class="sub" title="Database work after the response or in the background — not part of the wait">+ ${ms(d.offMs)} not waited for</span>` : ''}
+      </div>
+    </div>`
+}
+
+function loopTitle(l) {
+  const loop = l.loops?.[l.loops.length - 1]
+  return (
+    (l.confidence === 'exact'
+      ? 'Static analysis flags this call site as a database call inside a loop'
+      : 'Static analysis flags a database call in a loop a few lines from this one — the report was probably made from a slightly different version of the code') +
+    `\n${l.file}:${l.line}` +
+    (loop?.header ? `\n${loop.header}` : '') +
+    (l.chain ? `\nvia ${l.chain}` : '')
+  )
+}
+
+/** What to change first, ranked by the time it would buy back. */
+function fixFirstHtml(t) {
+  const fixes = t?.fixFirst ?? []
+  if (!fixes.length) return ''
+  const items = fixes
+    .map((f, i) => {
+      const where = f.method
+        ? `<code>${esc(f.method)}</code>${f.file ? ` · ${esc(f.file.split(/[\\/]/).pop())}${f.line ? ':' + f.line : ''}` : ''}`
+        : ''
+      const loop = f.inLoop
+        ? ` <span class="pill loop${f.inLoop.confidence === 'exact' ? '' : ' lead'}" title="${esc(loopTitle(f.inLoop))}">in loop ${esc(f.inLoop.shortFile)}:${f.inLoop.line}</span>`
+        : ''
+      const gain = f.savedMs
+        ? `<b>~${ms(f.savedMs)}</b><span class="sub">${f.avoidable ? `−${f.avoidable} quer${f.avoidable === 1 ? 'y' : 'ies'}` : 'fewer round-trips'}</span>`
+        : `<span class="sub">${ms(f.totalMs)}<br>${f.share}% of db time</span>`
+      return `
+        <button class="fix ${esc(f.level)}" data-act="goto-group" data-group="${esc(f.group)}" title="${esc(f.fix || 'Open this query group')}">
+          <span class="fix-n">${i + 1}</span>
+          <span style="min-width:0">
+            <span class="fix-title" style="display:block">${esc(f.title)}</span>
+            <span class="fix-where" style="display:block">${esc(f.op)} ${esc(f.table ?? '')} ×${f.count}${where ? ' · ' + where : ''}${loop}</span>
+          </span>
+          <span class="fix-gain">${gain}</span>
+        </button>`
+    })
+    .join('')
+  return `
+    <div class="section">
+      <div class="section-title">Fix first <span class="sub">ranked by estimated time saved — removable executions × their average duration</span></div>
+      <div class="fixes">${items}</div>
+    </div>`
+}
+
+/** Rounds an axis step to 1-2-5 so the ticks read as round numbers. */
+function niceStep(range, ticks = 4) {
+  const raw = range / ticks
+  const pow = 10 ** Math.floor(Math.log10(Math.max(raw, 1)))
+  return [1, 2, 5, 10].map((m) => m * pow).find((s) => s >= raw) ?? raw
+}
+
+/**
+ * Every request on one time axis, with every query as a tick inside it. A run
+ * of ticks is a loop; a long tick is a slow query; a long bar with no ticks is
+ * time the application spent on its own.
+ */
+function waterfallHtml(t) {
+  if (!t || !t.requests?.length) return ''
+  const spanEnd = Math.max(0, ...t.spans.map((s) => s.offsetMs + s.durationMs))
+  const reqEnd = Math.max(0, ...t.requests.map((r) => r.offsetMs + (r.durationMs ?? 0)))
+  const range = Math.max(t.wallMs, spanEnd, reqEnd, 1)
+  const pct = (n) => `${Math.min(Math.max((n / range) * 100, 0), 100)}%`
+
+  const step = niceStep(range)
+  const ticks = []
+  for (let v = 0; v <= range + 0.001; v += step) ticks.push(v)
+  const axis = ticks.map((v) => `<span style="left:${pct(v)}">${ms(v)}</span>`).join('')
+
+  const byReq = new Map()
+  for (const sp of t.spans) {
+    const k = sp.reqId ?? ''
+    if (!byReq.has(k)) byReq.set(k, [])
+    byReq.get(k).push(sp)
+  }
+
+  const spanHtml = (sp) =>
+    `<button class="wf-span ${sp.level === 'high' ? 'high' : sp.level === 'med' ? 'med' : ''} ${sp.timing !== 'waited' ? 'off' : ''}" ` +
+    `style="left:${pct(sp.offsetMs)};width:${pct(sp.durationMs)}" data-act="goto-group" data-group="${esc(sp.group ?? '')}" ` +
+    `title="${esc(`${sp.durationMs} ms at +${ms(sp.offsetMs)}${sp.timing !== 'waited' ? ' — not waited for' : ''}`)}" aria-label="query"></button>`
+
+  const rows = t.requests
+    .map((r) => {
+      const label = r.handler || `${r.method ?? ''} ${r.path ?? ''}`.trim() || 'request'
+      const status = r.status ? `<span class="st ${r.status >= 400 ? 'bad' : ''}">${r.status}</span>` : ''
+      const dur = r.durationMs != null ? `${ms(r.durationMs)}, db ${ms(r.dbMs)}` : 'no end seen'
+      const title = `${r.method ?? ''} ${r.path ?? ''}\n${r.app ?? ''}\n${r.calls} quer${r.calls === 1 ? 'y' : 'ies'} · ${dur}`
+      return `
+        <div class="wf-row">
+          <span class="wf-label" title="${esc(title)}">${status}<b>${esc(label)}</b> <span class="sub">${r.calls}q · ${esc(dur)}</span></span>
+          <span class="wf-track">
+            <span class="wf-req ${r.durationMs == null ? 'open-ended' : ''}" style="left:${pct(r.offsetMs)};width:${pct(r.durationMs ?? range - r.offsetMs)}"></span>
+            ${(byReq.get(r.id) ?? []).map(spanHtml).join('')}
+          </span>
+        </div>`
+    })
+    .join('')
+
+  // Calls whose request was never seen, or that belong to no request at all.
+  const known = new Set(t.requests.map((r) => r.id))
+  const orphans = t.spans.filter((sp) => !known.has(sp.reqId))
+  const orphanRow = orphans.length
+    ? `<div class="wf-row"><span class="wf-label"><b>outside a request</b> <span class="sub">${orphans.length}q</span></span>
+         <span class="wf-track">${orphans.map(spanHtml).join('')}</span></div>`
+    : ''
+
+  return `
+    <div class="section">
+      <div class="section-title">Waterfall <span class="sub">${t.requests.length} request${t.requests.length === 1 ? '' : 's'}${
+        t.sequential ? ` · ${t.sequential + 1} ran one after another` : ''
+      }${t.spansTruncated ? ` · first ${t.spans.length} queries drawn` : ''} — click a query to open its group</span></div>
+      <div class="wf">
+        <div class="wf-axis"><span></span><span class="wf-ticks">${axis}</span></div>
+        ${rows}${orphanRow}
+        <div class="wf-legend">
+          <span><i class="sw req"></i>request</span>
+          <span><i class="sw db"></i>query</span>
+          <span><i class="sw amber"></i>worth a look</span>
+          <span><i class="sw red"></i>removable</span>
+        </div>
+      </div>
+    </div>`
+}
+
 function paintDetail(id, d) {
   const host = list.querySelector(`.action[data-id="${CSS.escape(id)}"] .detail`)
   if (!host) return
 
-  const header = `
-    <div class="sub" style="margin:6px 0 2px">
+  const scaling = d.scaling ?? {}
+  const cost = scaling.formula
+    ? `<div class="sub costline" title="Where the call count comes from. A term with no dimension is a constant; the rest are a call per row of the named table, multiplied for each level of nesting.">
+         cost: ${esc(scaling.formula)}${
+           scaling.maxDepth
+             ? ` — about <b>${scaling.projected}</b> at ${scaling.factor}× the data${
+                 scaling.worstCase > scaling.projected ? `, up to <b>${scaling.worstCase}</b> if every level grows` : ''
+               }`
+             : ''
+         }${
+           scaling.unclassified
+             ? ` <span class="unknown" title="A loop whose driver could not be established is left out of the projection rather than guessed at.">(${scaling.unclassified} loop${scaling.unclassified === 1 ? '' : 's'} unclassified)</span>`
+             : ''
+         }
+       </div>`
+    : ''
+
+  const meta = `
+    <div class="sub meta">
       ${d.roundTrips} round-trip${d.roundTrips === 1 ? '' : 's'} ·
       ${d.requests} request${d.requests === 1 ? '' : 's'} ·
       ${esc(d.apps.join(', '))}
@@ -369,10 +863,31 @@ function paintDetail(id, d) {
     </div>`
 
   host.innerHTML =
-    header +
-    (d.findings.length ? `<div class="findings">${d.findings.map(findingHtml).join('')}</div>` : '') +
+    verdictHtml(d.time) +
+    splitHtml(d.time, d) +
+    fixFirstHtml(d.time) +
+    waterfallHtml(d.time) +
+    meta +
+    cost +
+    (d.findings.length
+      ? `<div class="section-title">About the whole click</div><div class="findings">${d.findings.map(findingHtml).join('')}</div>`
+      : '') +
+    `<div class="section-title">Queries <span class="sub">${d.groups.length} group${d.groups.length === 1 ? '' : 's'}, most removable first</span></div>` +
     d.groups.map((g) => groupRow(id, g)).join('')
   host.hidden = false
+}
+
+/** Opens a query group from the fix list or the waterfall, and brings it into view. */
+function gotoGroup(actionId, groupId) {
+  if (!groupId) return
+  const actionEl = list.querySelector(`.action[data-id="${CSS.escape(actionId)}"]`)
+  const groupEl = actionEl?.querySelector(`.group[data-key="${CSS.escape(groupId)}"]`)
+  if (!groupEl) return
+  if (!openGroups.has(`${actionId}::${groupId}`)) groupEl.querySelector('.grow').click()
+  groupEl.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  groupEl.classList.remove('flash')
+  void groupEl.offsetWidth // restart the animation
+  groupEl.classList.add('flash')
 }
 
 async function loadDetail(id) {
@@ -403,11 +918,11 @@ list.addEventListener('click', (event) => {
       case 'copy-call':
         copyCall(actionId, groupId, tool)
         break
-      case 'save-call':
-        downloadCall(actionId, groupId)
+      case 'export-menu':
+        openExportMenu(tool, actionId, groupId)
         break
-      case 'export-flow':
-        exportFlow(actionId)
+      case 'goto-group':
+        gotoGroup(actionId, tool.dataset.group)
         break
     }
     return
@@ -503,8 +1018,24 @@ noteText.addEventListener('keydown', (event) => {
 
 // ------------------------------------------------------- exporting one call
 
-function findGroup(actionId, groupId) {
-  const detail = details.get(actionId)
+/**
+ * The detail of a flow, fetched if the cache does not have it. The cache is
+ * dropped whenever new data arrives for a flow, so a button pressed in that
+ * moment must not find nothing and silently do nothing.
+ */
+async function detailOf(actionId) {
+  let detail = details.get(actionId)
+  if (!detail) {
+    const res = await fetch(`/api/action/${encodeURIComponent(actionId)}`)
+    if (!res.ok) return null
+    detail = await res.json()
+    details.set(actionId, detail)
+  }
+  return detail
+}
+
+async function findGroup(actionId, groupId) {
+  const detail = await detailOf(actionId)
   const group = detail?.groups.find((g) => g.id === groupId)
   return group ? { detail, group } : null
 }
@@ -525,6 +1056,39 @@ function callAsText(detail, g) {
     `- **Executions:** ${g.count} statement${g.count === 1 ? '' : 's'} in ${g.roundTrips} round-trip${g.roundTrips === 1 ? '' : 's'}` +
       (g.op === 'SELECT' ? `, ${g.distinctParams} distinct parameter set${g.distinctParams === 1 ? '' : 's'}` : `, ${g.distinctRows} distinct row${g.distinctRows === 1 ? '' : 's'}`),
   ]
+
+  if (KIND_TEXT[g.kind]) out.push(`- **Kind:** ${KIND_TEXT[g.kind][0]}`)
+  if (g.staticLoop) {
+    const l = g.staticLoop
+    const loop = l.loops?.[l.loops.length - 1]
+    out.push(
+      `- **In a loop:** ${l.file}:${l.line}${loop?.header ? ` — \`${loop.header}\`` : ''}` +
+        (l.confidence === 'exact' ? ' (static analysis)' : ' (static analysis, nearby line)'),
+    )
+  }
+
+  const off = (g.timing?.afterResponse ?? 0) + (g.timing?.background ?? 0)
+  if (off) {
+    const parts = []
+    if (g.timing.afterResponse) parts.push(`${g.timing.afterResponse} after the response was already sent`)
+    if (g.timing.background) parts.push(`${g.timing.background} outside any request (background)`)
+    out.push(`- **Not waited for:** ${parts.join(', ')} — database load the user never waited on`)
+  }
+  if (g.sync && g.timing?.waited) {
+    out.push('- **API:** blocking (non-async) — the thread waits idle for the database')
+  }
+
+  if (g.scaling) {
+    const s = g.scaling
+    out.push(
+      `- **Growth:** ` +
+        (s.depth === null
+          ? `runs ${s.executions}× in a loop, but what drives it could not be established`
+          : s.depth === 0
+            ? 'fixed — the count does not follow the data'
+            : `one call per ${s.chain.join(' × ')} row — ${s.executions} today, ${s.depth} level${s.depth === 1 ? '' : 's'} deep`),
+    )
+  }
 
   if (g.findings.length) {
     out.push('', '#### Findings')
@@ -559,12 +1123,12 @@ function callAsText(detail, g) {
     )
   })
 
-  out.push('', `_Recorded by DB Call Overlay on ${new Date(detail.startedAt).toLocaleString()}._`)
+  out.push('', `_Recorded by ${PRODUCT} on ${new Date(detail.startedAt).toLocaleString()}._`)
   return out.join('\n')
 }
 
 async function copyCall(actionId, groupId, button) {
-  const found = findGroup(actionId, groupId)
+  const found = await findGroup(actionId, groupId)
   if (!found) return
 
   const label = button.innerHTML
@@ -577,7 +1141,20 @@ async function copyCall(actionId, groupId, button) {
   setTimeout(() => (button.innerHTML = label), 1800)
 }
 
-/** Shared by both export buttons so a file always lands the same way. */
+/**
+ * The spreadsheet exports are built by the collector, so the browser only has to
+ * follow a link. That keeps the Excel-specific handling in one place instead of
+ * having a second copy of it here, and lets the server name the file.
+ */
+function downloadCsv(params) {
+  const query = new URLSearchParams(params).toString()
+  const link = Object.assign(document.createElement('a'), { href: `/api/export.csv?${query}` })
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+}
+
+/** Shared by both JSON exports so a file always lands the same way. */
 function downloadJson(name, payload) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }))
   const link = Object.assign(document.createElement('a'), { href: url, download: name.replace(/[^\w.-]+/g, '-') })
@@ -589,29 +1166,24 @@ function downloadJson(name, payload) {
 
 /** The whole flow — every call in it — from the row, without opening it. */
 async function exportFlow(actionId) {
-  let detail = details.get(actionId)
-  if (!detail) {
-    const res = await fetch(`/api/action/${encodeURIComponent(actionId)}`)
-    if (!res.ok) return
-    detail = await res.json()
-    details.set(actionId, detail)
-  }
+  const detail = await detailOf(actionId)
+  if (!detail) return
 
   downloadJson(`flow-${detail.label}-${Date.now()}.json`, {
     exportedAt: new Date().toISOString(),
-    exportedBy: 'DB Call Overlay',
+    exportedBy: PRODUCT,
     flow: detail,
   })
 }
 
-function downloadCall(actionId, groupId) {
-  const found = findGroup(actionId, groupId)
+async function downloadCall(actionId, groupId) {
+  const found = await findGroup(actionId, groupId)
   if (!found) return
   const { detail, group } = found
 
   const payload = {
     exportedAt: new Date().toISOString(),
-    exportedBy: 'DB Call Overlay',
+    exportedBy: PRODUCT,
     action: {
       id: detail.id,
       label: detail.label,
@@ -624,6 +1196,93 @@ function downloadCall(actionId, groupId) {
 
   downloadJson(`${group.op}-${group.table ?? 'call'}-${Date.now()}.json`, payload)
 }
+
+// -------------------------------------------------------------- export menu
+
+// One shared dropdown for every export button: which button opened it decides
+// whether it exports a whole flow or a single call, and in which format.
+const exportMenu = document.getElementById('exportMenu')
+let exportTarget = null
+
+function openExportMenu(button, actionId, groupId) {
+  // A second click on the button that opened it closes it again.
+  if (!exportMenu.hidden && exportTarget?.button === button) return closeExportMenu()
+
+  exportTarget = { button, actionId, groupId }
+  document.getElementById('exportMenuTitle').textContent = groupId ? 'Export this call' : 'Export this flow'
+
+  // Paint it before measuring, or the first open reads a zero-size box.
+  exportMenu.hidden = false
+  placeExportMenu(button)
+  exportMenu.querySelector('button').focus()
+}
+
+function placeExportMenu(button) {
+  const anchor = button.getBoundingClientRect()
+  const size = exportMenu.getBoundingClientRect()
+  const left = Math.max(8, Math.min(anchor.right - size.width, window.innerWidth - size.width - 8))
+  const fitsBelow = anchor.bottom + 4 + size.height <= window.innerHeight - 8
+  exportMenu.style.left = `${left}px`
+  exportMenu.style.top = `${fitsBelow ? anchor.bottom + 4 : anchor.top - size.height - 4}px`
+}
+
+/**
+ * The button the menu belongs to, as it is now. An open row is repainted when
+ * new data arrives, which replaces the button the menu was opened from.
+ */
+function exportAnchor() {
+  if (!exportTarget) return null
+  if (exportTarget.button.isConnected) return exportTarget.button
+  const row = list.querySelector(`.action[data-id="${CSS.escape(exportTarget.actionId)}"]`)
+  const scope = exportTarget.groupId ? row?.querySelector(`.group[data-key="${CSS.escape(exportTarget.groupId)}"] .grow`) : row?.querySelector('.arow')
+  const found = scope?.querySelector('button[data-act="export-menu"]') ?? null
+  if (found) exportTarget.button = found
+  return found
+}
+
+function closeExportMenu() {
+  exportMenu.hidden = true
+  exportTarget = null
+}
+
+exportMenu.addEventListener('click', (event) => {
+  const item = event.target.closest('button[data-format]')
+  if (!item || !exportTarget) return
+  const { actionId, groupId } = exportTarget
+  closeExportMenu()
+
+  if (item.dataset.format === 'csv') {
+    downloadCsv(groupId ? { flow: actionId, group: groupId } : { flow: actionId })
+  } else if (groupId) {
+    downloadCall(actionId, groupId)
+  } else {
+    exportFlow(actionId)
+  }
+})
+
+document.addEventListener('click', (event) => {
+  if (!exportMenu.hidden && !exportMenu.contains(event.target)) closeExportMenu()
+})
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !exportMenu.hidden) closeExportMenu()
+})
+
+// The menu is fixed-position, so it follows its row while the list scrolls -
+// including the small scrolls a repaint causes - and closes only once that row
+// has left the list's view.
+list.addEventListener(
+  'scroll',
+  () => {
+    if (exportMenu.hidden) return
+    const button = exportAnchor()
+    const box = button?.getBoundingClientRect()
+    const view = list.getBoundingClientRect()
+    if (!box || box.bottom < view.top || box.top > view.bottom) return closeExportMenu()
+    placeExportMenu(button)
+  },
+  { passive: true },
+)
 
 async function deleteFlow(id) {
   const item = state?.items.find((i) => i.id === id)
@@ -640,6 +1299,20 @@ async function deleteFlow(id) {
 }
 
 document.getElementById('clearBtn').addEventListener('click', async () => {
+  // Deleting one flow asks; throwing away a whole session should not be the one
+  // thing that does not, least of all from a keyboard shortcut.
+  const flows = state?.items.length ?? 0
+  if (flows > 0) {
+    const unsaved = state?.items.filter((i) => !i.saved).length ?? 0
+    const warning = state?.project
+      ? `Clear the list?\n\n${flows} flow${flows === 1 ? '' : 's'} disappear from the window. ` +
+        `Saved flows stay in project ${state.project.name} and come back when you reopen it` +
+        (unsaved ? `, but ${unsaved} not yet saved would be lost.` : '.')
+      : `Throw away everything collected so far?\n\n${flows} flow${flows === 1 ? '' : 's'}, ` +
+        `not saved anywhere — no project is open, so this cannot be undone.`
+    if (!confirm(warning)) return
+  }
+
   await post('/api/clear')
   open.clear()
   openGroups.clear()
@@ -780,12 +1453,85 @@ function resetView() {
 
 const settingsDialog = document.getElementById('settingsDialog')
 
+/** Threshold input id <-> settings key, used in both directions. */
+const THRESHOLD_FIELDS = {
+  thSlowMs: 'slowMs',
+  thVerySlowMs: 'verySlowMs',
+  thWideCols: 'wideCols',
+  thLoopRoundTrips: 'loopRoundTrips',
+  thNPlusOneMin: 'nPlusOneMin',
+  thNPlusOneMaxParams: 'nPlusOneMaxParams',
+  thProjectionFactor: 'projectionFactor',
+}
+
 document.getElementById('settingsBtn').addEventListener('click', async () => {
   const config = await (await fetch('/api/config')).json()
   document.getElementById('apiPorts').value = (config.apiPorts ?? []).join(', ')
+  document.getElementById('loopReport').value = config.loopReport ?? ''
+  paintLoopStatus(config.loops)
   document.getElementById('collectorPorts').textContent =
     `The app itself uses port ${config.uiPort} for this window and ${config.ingestPort} for the probes.`
+
+  for (const [id, key] of Object.entries(THRESHOLD_FIELDS)) {
+    document.getElementById(id).value = config.thresholds?.[key] ?? ''
+  }
+
+  // Not a setting: the probe reads it as a process starts, so it can only be
+  // changed for apps that have not been started yet.
+  document.getElementById('paramsNote').textContent = state?.paramsCaptured
+    ? 'Recorded queries include their parameter values — real data from whatever database you tested ' +
+      'against. To record without them, start the app with DBPROBE_PARAMS=off; APIs already running ' +
+      'keep the setting they started with.'
+    : 'DBPROBE_PARAMS=off is set, so parameter values are not recorded. Row identity and duplicate ' +
+      'detection need those values, so duplicate writes and repeated reads cannot be counted.'
+
   settingsDialog.showModal()
+})
+
+function paintLoopStatus(loops) {
+  const el = document.getElementById('loopStatus')
+  el.className = 'sub'
+  if (!loops?.configured) {
+    el.textContent = 'No report set.'
+  } else if (loops.error) {
+    el.className = 'sub bad'
+    el.textContent = loops.error
+  } else {
+    el.className = 'sub good'
+    el.textContent = `${loops.findings} database calls in loops loaded, from a file changed ${new Date(loops.modifiedAt).toLocaleString()}.`
+  }
+}
+
+const helpDialog = document.getElementById('helpDialog')
+document.getElementById('helpBtn').addEventListener('click', () => helpDialog.showModal())
+
+// -------------------------------------------------------------------- theme
+
+// Follows Windows unless told otherwise. Remembered per machine; a page that
+// cannot use storage simply follows Windows every time.
+const THEMES = ['auto', 'light', 'dark']
+const THEME_TITLE = { auto: 'Theme: follow Windows', light: 'Theme: light', dark: 'Theme: dark' }
+const themeBtn = document.getElementById('themeBtn')
+
+function applyTheme(theme) {
+  if (theme === 'auto') delete document.documentElement.dataset.theme
+  else document.documentElement.dataset.theme = theme
+  themeBtn.title = THEME_TITLE[theme]
+  themeBtn.classList.toggle('on', theme !== 'auto')
+}
+
+let theme = 'auto'
+try {
+  theme = localStorage.getItem('clicktrace.theme') ?? 'auto'
+} catch {}
+applyTheme(THEMES.includes(theme) ? theme : 'auto')
+
+themeBtn.addEventListener('click', () => {
+  theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]
+  applyTheme(theme)
+  try {
+    localStorage.setItem('clicktrace.theme', theme)
+  } catch {}
 })
 
 // ------------------------------------------------------------------ updates
@@ -831,7 +1577,17 @@ settingsDialog.addEventListener('close', async () => {
     .map(Number)
     .filter((port) => Number.isInteger(port) && port > 0 && port < 65536)
 
-  await post('/api/config', { apiPorts })
+  const thresholds = {}
+  for (const [id, key] of Object.entries(THRESHOLD_FIELDS)) {
+    const value = Number(document.getElementById(id).value)
+    if (Number.isFinite(value) && value > 0) thresholds[key] = value
+  }
+
+  await post('/api/config', { apiPorts, thresholds, loopReport: document.getElementById('loopReport').value })
+  // Everything was judged under the old thresholds.
+  details.clear()
+  signatures.clear()
+  lastRows = ''
 })
 
 // -------------------------------------------------------------- native shell
@@ -864,6 +1620,10 @@ if (shell) {
 
 document.addEventListener('keydown', (event) => {
   if (event.key === 'F12') return send('devtools')
+  if (event.key === 'F1') {
+    event.preventDefault()
+    return helpDialog.showModal()
+  }
   if (!event.ctrlKey || event.altKey) return
 
   const handled = {
@@ -872,6 +1632,7 @@ document.addEventListener('keydown', (event) => {
     l: () => document.getElementById('clearBtn').click(),
     m: () => markLabel.focus(),
     p: () => document.getElementById('recBtn').click(),
+    f: () => filterText.focus(),
   }[event.key.toLowerCase()]
 
   if (handled) {
@@ -886,14 +1647,16 @@ function connect() {
   const source = new EventSource('/api/stream')
 
   source.onmessage = (event) => {
+    const previous = state?.version
     state = JSON.parse(event.data)
-    repoRoot = state.repoRoot
 
-    // Only drop cached detail for actions that actually gained calls.
+    // Drop cached detail for the flows that actually moved. `rev` is what makes
+    // this correct: the recorder sends a statement first and its row count
+    // afterwards, and the second half changes what an open row shows without
+    // changing any of the totals the row itself displays.
     for (const item of state.items) {
-      const sig = `${item.total}:${item.avoidable}:${item.totalMs}`
-      if (signatures.get(item.id) !== sig) {
-        signatures.set(item.id, sig)
+      if (signatures.get(item.id) !== item.rev) {
+        signatures.set(item.id, item.rev)
         details.delete(item.id)
       }
     }

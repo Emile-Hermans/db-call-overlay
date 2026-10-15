@@ -66,4 +66,4 @@ Write-Host "Opening $Solution with the recorder attached..." -ForegroundColor Cy
 Start-Process $devenv -ArgumentList "`"$Solution`""
 
 Write-Host ''
-Write-Host 'Press F5 as usual - what you debug will show up in DB Call Overlay.' -ForegroundColor Green
+Write-Host 'Press F5 as usual - what you debug will show up in Clicktrace.' -ForegroundColor Green

@@ -73,4 +73,4 @@ foreach ($item in $Project) {
 }
 
 Write-Host ''
-Write-Host 'Recorder attached. Open DB Call Overlay to watch.' -ForegroundColor Green
+Write-Host 'Recorder attached. Open Clicktrace to watch.' -ForegroundColor Green

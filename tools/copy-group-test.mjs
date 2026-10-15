@@ -8,7 +8,11 @@ import { fileURLToPath } from 'node:url'
 // Repo root: normally the parent of tools/, but overridable so the test can be
 // run from a folder where Playwright happens to be installed.
 const ROOT = process.argv[2] ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const UI = 'http://127.0.0.1:8478'
+// Port is a parameter so a test run cannot sit on the port real probes dial.
+// A probe connects to the ingest port the moment its application starts; if that
+// is the port a test is using, the test ingests somebody's live recording.
+const UI_PORT = Number(process.argv[3] ?? 8478)
+const UI = `http://127.0.0.1:${UI_PORT}`
 
 const browser = await chromium.launch()
 const context = await browser.newContext({ permissions: ['clipboard-read', 'clipboard-write'] })
@@ -23,7 +27,7 @@ const check = (ok, what, extra = '') => {
 
 await page.goto(UI, { waitUntil: 'networkidle' })
 await page.evaluate(() => fetch('/api/clear', { method: 'POST' }))
-execSync('node tools/selftest.mjs', { cwd: ROOT, stdio: 'ignore' })
+execSync(`node tools/selftest.mjs ${UI_PORT - 1}`, { cwd: ROOT, stdio: 'ignore' })
 await page.waitForFunction(() => document.querySelectorAll('.action').length >= 3, null, { timeout: 15000 })
 
 // Open one action so its group rows exist, but leave the GROUPS collapsed.

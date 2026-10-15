@@ -3,83 +3,144 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>DB Call Overlay</title>
+    <title>Clicktrace</title>
+    <link rel="icon" href="/logo.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
+    <script>
+      // Before the stylesheet paints, so a light-theme user never sees a dark flash.
+      try {
+        const t = localStorage.getItem('clicktrace.theme')
+        if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t
+      } catch {}
+    </script>
   </head>
   <body>
     <header id="bar">
-      <div class="drag">
-        <span class="rec" id="recDot" title="recording"></span>
-        <strong>DB Calls</strong>
-        <span class="muted" id="apps">waiting for a probe…</span>
+      <div class="brand drag">
+        <svg class="logo" viewBox="0 0 24 24" aria-hidden="true">
+          <defs>
+            <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="var(--brand-1)" />
+              <stop offset="1" stop-color="var(--brand-2)" />
+            </linearGradient>
+          </defs>
+          <rect width="24" height="24" rx="6" fill="url(#lg)" />
+          <rect x="5" y="5.5" width="9" height="3" rx="1.5" fill="#fff" />
+          <rect x="9" y="10.5" width="10" height="3" rx="1.5" fill="#fff" opacity=".8" />
+          <rect x="13" y="15.5" width="6" height="3" rx="1.5" fill="#fff" opacity=".6" />
+          <path d="M4.6 12.4v8.4l2.3-2.2 1.6 3.3 1.6-.8-1.6-3.2h3.2z" fill="#fff" stroke="var(--brand-2)" stroke-width=".7" stroke-linejoin="round" />
+        </svg>
+        <span class="wordmark">Clicktrace</span>
+        <span class="status" id="status" title="What is being recorded">
+          <span class="rec" id="recDot"></span>
+          <span id="apps">waiting for an API…</span>
+        </span>
       </div>
+
       <div class="tools">
         <button id="projectBtn" class="project" title="Open, create or manage a project">
-          <span class="folder">&#128193;</span>
+          <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.6l1.4 1.5h6a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" /></svg>
           <span id="projectName">Scratch</span>
           <span class="caret">&#9662;</span>
         </button>
-        <button id="settingsBtn" class="glyph" title="Settings">&#9881;</button>
-        <input id="markLabel" placeholder="name this step…" spellcheck="false" />
-        <button id="markBtn" title="Group everything that happens next under this name">Mark</button>
-        <button id="recBtn" title="Pause / resume collecting">Pause</button>
-        <button id="clearBtn" title="Throw away everything collected so far">Clear</button>
-        <a id="exportBtn" href="/api/export" title="Download the full report as JSON">Export</a>
-        <span id="shellTools" hidden>
-          <button id="pinBtn" class="glyph" title="Always on top (Ctrl+T)">&#128204;</button>
+
+        <span class="markgroup" title="Group everything that happens next under one name — for flows without a click">
+          <input id="markLabel" placeholder="Name the next step…" spellcheck="false" aria-label="Step name" />
+          <button id="markBtn">Mark</button>
+        </span>
+
+        <button id="recBtn" title="Pause / resume recording (Ctrl+P)">Pause</button>
+        <button id="clearBtn" title="Throw away everything collected so far (Ctrl+L)">Clear</button>
+
+        <span class="seg" role="group" aria-label="Export the whole session">
+          <a
+            id="exportCsvBtn"
+            href="/api/export.csv"
+            title="Download the whole session as a spreadsheet — one row per query, ready to sort and filter in Excel"
+            >Export CSV</a
+          ><a id="exportBtn" href="/api/export" class="secondary" title="Download the whole session as JSON">JSON</a>
+        </span>
+
+        <span class="iconrow">
+          <button id="themeBtn" class="glyph" title="Theme: follow Windows">
+            <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.5" /><path d="M8 2.5a5.5 5.5 0 0 1 0 11z" /></svg>
+          </button>
+          <button id="helpBtn" class="glyph" title="How to read this (F1)">?</button>
+          <button id="settingsBtn" class="glyph" title="Settings">
+            <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.9 1h2.2l.4 1.9 1.3.6 1.7-1 1.5 1.5-1 1.7.6 1.3 1.9.4v2.2l-1.9.4-.6 1.3 1 1.7-1.5 1.5-1.7-1-1.3.6-.4 1.9H6.9l-.4-1.9-1.3-.6-1.7 1-1.5-1.5 1-1.7-.6-1.3L.5 9.1V6.9l1.9-.4.6-1.3-1-1.7 1.5-1.5 1.7 1 1.3-.6zM8 5.6a2.4 2.4 0 1 0 0 4.8 2.4 2.4 0 0 0 0-4.8z" /></svg>
+          </button>
+          <span id="shellTools" hidden>
+            <button id="pinBtn" class="glyph" title="Always on top (Ctrl+T)">
+              <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 1.5 14.5 6l-1.3.4-2.6 2.6.4 3.3-1.4 1.4-2.6-2.6L3 15l-1-1 4-4-2.6-2.6L4.8 6l3.3.4 2.6-2.6z" /></svg>
+            </button>
+          </span>
         </span>
       </div>
     </header>
 
-    <section id="totals">
-      <div class="tile" title="Every SQL statement recorded. A batched command counts once per statement inside it.">
-        <span class="k" id="tCalls">0</span><span class="v">calls</span>
+    <section id="totals" aria-label="Session summary">
+      <div class="tile" title="Clicks (flows) recorded, by verdict: waste, review, ok.">
+        <span class="v">Clicks</span>
+        <span class="k" id="tFlows">0</span>
+        <span class="lights">
+          <span class="light red" title="waste"><i></i><b id="tRed">0</b></span>
+          <span class="light amber" title="review"><i></i><b id="tAmber">0</b></span>
+          <span class="light green" title="ok"><i></i><b id="tGreen">0</b></span>
+        </span>
       </div>
-      <div
-        class="tile"
-        title="Same query with the same parameters repeated inside ONE request, plus N+1 loops collapsed to a single query. This is the real target — fixable in one method."
-      >
-        <span class="k warn" id="tInReq">0</span><span class="v">in-request</span>
+      <div class="tile" title="Every SQL statement recorded, and what is left once the removable ones are gone. A batched command counts once per statement inside it.">
+        <span class="v">Queries</span>
+        <span class="k"><span id="tCalls">0</span><span class="to"> &rarr; </span><span id="tProjected" class="good">0</span></span>
+        <span class="s">after fixes</span>
       </div>
-      <div
-        class="tile"
-        title="Rows written more than once in one action, even when the two writes are different statements."
-      >
-        <span class="k warn" id="tWrites">0</span><span class="v">dup. writes</span>
+      <div class="tile" title="Removable inside one request: same query + same values repeated, N+1 loops collapsed to one query, and rows written twice with the same columns. Cross-request repeats are a design decision and are NOT counted.">
+        <span class="v">Removable</span>
+        <span class="k warn" id="tAvoid">0</span>
+        <span class="s"><b id="tInReq">0</b> repeats · <b id="tWrites">0</b> dup. writes<span id="tAcrossWrap"> · <b id="tAcross" class="soft">0</b> cross-request</span></span>
       </div>
-      <div
-        class="tile"
-        title="The same query in DIFFERENT requests of one action. Each request has its own DbContext, so this is usually normal, not waste — removing it means merging endpoints or caching across requests. NOT counted in 'could be'."
-      >
-        <span class="k soft" id="tAcross">0</span><span class="v">cross-request</span>
+      <div class="tile" title="Total time the database spent on these calls (sum of each command's duration), and the part of it nobody waited for: calls after the response or in the background.">
+        <span class="v">DB time</span>
+        <span class="k" id="tMs">0 ms</span>
+        <span class="s"><b id="tOffMs">0 ms</b> not waited</span>
       </div>
-      <div class="tile" title="calls − in-request − duplicate writes. Cross-request repeats are deliberately excluded.">
-        <span class="k" id="tProjected">0</span><span class="v">could be</span>
-      </div>
-      <div class="tile" title="Total time the database spent on these calls (sum of each command's duration).">
-        <span class="k" id="tMs">0 ms</span><span class="v">db time</span>
-      </div>
-      <div class="tile lights">
-        <span class="light red"><i></i><b id="tRed">0</b></span>
-        <span class="light amber"><i></i><b id="tAmber">0</b></span>
-        <span class="light green"><i></i><b id="tGreen">0</b></span>
+      <div class="tile" id="scaleTile" title="What the same clicks would cost against more data.">
+        <span class="v" id="tScaleLabel">At 10× data</span>
+        <span class="k" id="tScale">0</span>
+        <span class="s">queries</span>
       </div>
     </section>
 
-    <div id="legend">
-      <span><i class="sw green"></i>optimised — nothing to remove</span>
-      <span><i class="sw amber"></i>review — slow, unfiltered or duplicated across endpoints</span>
-      <span><i class="sw red"></i>waste — repeated, N+1 or double-saved calls</span>
+    <div id="filterbar">
+      <label class="search">
+        <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6" /><path d="m10.4 10.4 3.6 3.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
+        <input id="filterText" placeholder="Find a click by name, table, method or endpoint…" spellcheck="false" aria-label="Filter" />
+      </label>
+      <span class="chips" role="group" aria-label="Show">
+        <button class="chip red on" data-colour="red" title="Clicks with removable calls: repeats, N+1, rows saved twice">waste</button>
+        <button class="chip amber on" data-colour="amber" title="Clicks worth a look: slow, unfiltered, over-fetching or repeated across requests">review</button>
+        <button class="chip green on" data-colour="green" title="Clicks with nothing to remove">ok</button>
+        <button class="chip scale" data-colour="grows" title="Only clicks whose query count grows with the data">grows</button>
+      </span>
+      <span class="sub" id="filterCount"></span>
+      <button id="filterClear" hidden>Clear filter</button>
+      <span class="spacer"></span>
+      <span class="note" id="loopNote" hidden></span>
+      <span class="note" id="excludedNote" hidden></span>
     </div>
 
     <main id="list"></main>
 
+    <section id="noMatches" hidden>
+      <p>No click matches this filter.</p>
+    </section>
+
     <section id="empty">
       <!-- Step 1: recording has never been set up on this machine. -->
-      <div id="setupNeeded" hidden>
+      <div id="setupNeeded" class="panel" hidden>
+        <div class="step">Step 1 of 2</div>
         <h2><span class="dotwarn"></span>Recording is not switched on yet</h2>
         <p>
-          DB Call Overlay needs permission to watch what your local APIs ask the database.
+          Clicktrace needs permission to watch what your local APIs ask the database.
           This is a one-time switch — it changes nothing in your own code.
         </p>
         <p class="cta">
@@ -89,7 +150,8 @@
       </div>
 
       <!-- Step 2a: Visual Studio is open but predates the switch. -->
-      <div id="setupVs" hidden>
+      <div id="setupVs" class="panel" hidden>
+        <div class="step">Step 2 of 2</div>
         <h2><span class="dotwarn"></span>Close Visual Studio and open it again</h2>
         <p>
           Recording is switched on, but Visual Studio was already open before that. It hands its
@@ -101,7 +163,8 @@
       </div>
 
       <!-- Step 2b: switched on, APIs running that predate it. -->
-      <div id="setupRestart" hidden>
+      <div id="setupRestart" class="panel" hidden>
+        <div class="step">Step 2 of 2</div>
         <h2><span class="dotok"></span>Recording is switched on</h2>
         <p>
           It starts watching an API the moment that API starts. These are already running, so
@@ -120,7 +183,7 @@
       </div>
 
       <!-- Step 3: switched on, nothing running to restart. -->
-      <div id="setupReady" hidden>
+      <div id="setupReady" class="panel" hidden>
         <h2><span class="dotok"></span>Ready — start your APIs</h2>
         <p>
           Recording is switched on. Start your APIs the way you always do (F5 in Visual
@@ -129,26 +192,31 @@
       </div>
 
       <!-- Opened in a plain browser tab, where we cannot change any settings. -->
-      <div id="setupBrowser" hidden>
+      <div id="setupBrowser" class="panel" hidden>
         <h2><span class="dotwarn"></span>No API is sending anything yet</h2>
-        <p>Open the <b>DB Call Overlay</b> app to switch recording on — it can set this up for you.</p>
+        <p>Open the <b>Clicktrace</b> app to switch recording on — it can set this up for you.</p>
       </div>
 
-      <div id="noCalls" hidden>
+      <div id="noCalls" class="panel" hidden>
         <h2><span class="dotok"></span>Connected — waiting for a click</h2>
         <p>
           Recording <b id="connectedApps"></b>.
-          Click something in your app and it will appear here.
+          Click something in your app and it appears here, with where its time went.
         </p>
+        <ol class="howto">
+          <li><b>Click</b> a button in your app.</li>
+          <li><b>Open</b> the row that appears — the verdict says whether the database is why it was slow.</li>
+          <li><b>Fix first</b> lists the changes that buy back the most time, with the method to open.</li>
+        </ol>
       </div>
     </section>
 
-    <div id="projectMenu" hidden>
+    <div id="projectMenu" class="popover" hidden>
       <div class="menu-title">Projects</div>
       <div id="projectList"></div>
       <div class="menu-sep"></div>
       <form id="newProjectForm">
-        <input id="newProjectName" placeholder="new project name…" spellcheck="false" maxlength="60" />
+        <input id="newProjectName" placeholder="New project name…" spellcheck="false" maxlength="60" />
         <button type="submit">Create</button>
       </form>
       <div class="menu-sep"></div>
@@ -158,9 +226,19 @@
       <div class="menu-foot" id="dataRoot"></div>
     </div>
 
+    <div id="exportMenu" class="popover" hidden>
+      <div class="menu-title" id="exportMenuTitle">Export</div>
+      <button class="menu-item" data-format="csv">
+        <span>Spreadsheet (CSV)</span><span class="hint">one row per query, for Excel</span>
+      </button>
+      <button class="menu-item" data-format="json">
+        <span>JSON</span><span class="hint">every detail, for tools</span>
+      </button>
+    </div>
+
     <dialog id="noteDialog">
       <form method="dialog">
-        <h3>What does this flow cover?</h3>
+        <h3>What does this click cover?</h3>
         <p class="sub" id="noteFlowLabel"></p>
         <textarea
           id="noteText"
@@ -175,19 +253,122 @@
       </form>
     </dialog>
 
+    <dialog id="helpDialog">
+      <form method="dialog">
+        <h3>Reading a click</h3>
+        <p class="sub lead">
+          Every row is one click — or one marked step — with every request and query it caused.
+          Open it and read it top to bottom:
+        </p>
+        <ol class="howto">
+          <li><b>Verdict.</b> Why it took as long as it did: <i>database-bound</i>, <i>application-bound</i>,
+            <i>mostly between requests</i>, or <i>fast</i>.</li>
+          <li><b>Where the time went.</b> The wait, split into SQL, application code and the gaps between
+            requests. Measured, not estimated.</li>
+          <li><b>Fix first.</b> The query groups worth changing, ranked by the time a fix would buy back,
+            with the method and line to open. Savings are estimates: removable executions × their
+            average duration.</li>
+          <li><b>Waterfall.</b> Each request on a time axis, with every query as a tick in it. A wall of
+            ticks is a loop; click one to jump to its query group.</li>
+          <li><b>Queries.</b> Every query group, unfoldable to its findings, call paths, SQL and each
+            execution.</li>
+        </ol>
+
+        <h3>The verdicts</h3>
+        <table class="help">
+          <tr><th>Database-bound</th><td>Half or more of the server time is SQL. Fixing queries makes this click faster.</td></tr>
+          <tr><th>Application-bound</th><td>Most server time is outside the database — code, serialisation, other services, locks. Removing queries will not fix it; profile the endpoint.</td></tr>
+          <tr><th>Between requests</th><td>The server was idle most of the time: the browser was rendering, or requests waited on each other.</td></tr>
+        </table>
+
+        <h3>The numbers</h3>
+        <p class="sub lead">
+          Every query listed is a <b>real database round-trip</b>. Reads answered from the change
+          tracker never reach the database and never appear here.
+        </p>
+        <table class="help">
+          <tr><th>Queries</th><td>Every SQL statement. One batched command counts once per statement inside it.</td></tr>
+          <tr><th>Repeats</th><td>The same query with the same values repeated <b>inside one request</b>, plus N+1 loops collapsed to a single query. <b>The real target</b> — fixable in one method.</td></tr>
+          <tr><th>Dup. writes</th><td>The same row written more than once <b>with the same columns</b>, so the second write throws the first away.</td></tr>
+          <tr><th>Cross-request</th><td>The same query in <b>different requests</b> of one click. Each request has its own unit of work, so this is usually normal; removing it is a design decision and it is <b>not</b> counted as removable.</td></tr>
+          <tr><th>After fixes</th><td><code>queries − repeats − dup. writes</code></td></tr>
+          <tr><th>At 10× data</th><td>What the same clicks would cost against ten times the data. Only proven growth is scaled; a range means a loop inside a loop.</td></tr>
+          <tr><th>DB time</th><td>The sum of each command's own duration — not wall-clock time.</td></tr>
+          <tr><th>Not waited</th><td>DB time from calls after the response was sent, or outside any request. A <b>write</b> there is flagged: the user was told “success” before it ran.</td></tr>
+          <tr><th>In loop</th><td>The query's call site is flagged by a static analysis report as a database call inside a loop — see Settings.</td></tr>
+        </table>
+
+        <h3>Shortcuts</h3>
+        <table class="help">
+          <tr><th>Ctrl+F</th><td>Find a click</td></tr>
+          <tr><th>Ctrl+M</th><td>Name the next step</td></tr>
+          <tr><th>Ctrl+P</th><td>Pause / resume recording</td></tr>
+          <tr><th>Ctrl+L</th><td>Clear everything collected</td></tr>
+          <tr><th>Ctrl+T</th><td>Always on top</td></tr>
+          <tr><th>Ctrl+R</th><td>Reload the window</td></tr>
+          <tr><th>F1 / F12</th><td>This help / developer tools</td></tr>
+        </table>
+
+        <menu>
+          <button value="close" class="primary">Close</button>
+        </menu>
+      </form>
+    </dialog>
+
     <dialog id="settingsDialog">
       <form method="dialog">
         <h3>Settings</h3>
-        <label for="apiPorts">API ports to record</label>
-        <input id="apiPorts" spellcheck="false" placeholder="1337, 2337, 3337, 4337" />
-        <p class="sub">
-          Comma separated. Change these if you run the APIs on other ports — the browser
-          extension only tags calls going to them.
-        </p>
-        <p class="sub" id="collectorPorts"></p>
 
-        <div id="updateBox" hidden>
-          <label>Version</label>
+        <fieldset>
+          <legend>Recording</legend>
+          <label for="apiPorts">API ports to record</label>
+          <input id="apiPorts" spellcheck="false" placeholder="5000, 5001" />
+          <p class="sub">
+            Comma separated. The browser extension only tags calls going to these ports.
+          </p>
+          <p class="sub" id="collectorPorts"></p>
+          <label>Parameter values</label>
+          <p class="sub" id="paramsNote"></p>
+        </fieldset>
+
+        <fieldset>
+          <legend>Static analysis</legend>
+          <label for="loopReport">Loop report</label>
+          <input id="loopReport" spellcheck="false" placeholder="C:\path\to\findings.json  or  analysis.sarif" />
+          <p class="sub">
+            Optional. A report of loops whose body reaches the database — a findings list or a SARIF
+            file from a Roslyn analyser. Queries whose call site it flags get an <b>in loop</b> badge
+            that names the loop. Read in place and re-read when the file changes; never copied.
+          </p>
+          <p class="sub" id="loopStatus"></p>
+        </fieldset>
+
+        <fieldset>
+          <legend>When to flag something</legend>
+          <div class="grid2">
+            <label class="tiny" for="thSlowMs">slow (ms)</label>
+            <input id="thSlowMs" type="number" min="1" max="60000" />
+            <label class="tiny" for="thVerySlowMs">very slow (ms)</label>
+            <input id="thVerySlowMs" type="number" min="1" max="60000" />
+            <label class="tiny" for="thWideCols">wide select (columns)</label>
+            <input id="thWideCols" type="number" min="1" max="1000" />
+            <label class="tiny" for="thLoopRoundTrips">write loop (round-trips)</label>
+            <input id="thLoopRoundTrips" type="number" min="2" max="10000" />
+            <label class="tiny" for="thNPlusOneMin">N+1 from (lookups)</label>
+            <input id="thNPlusOneMin" type="number" min="2" max="10000" />
+            <label class="tiny" for="thNPlusOneMaxParams">N+1 max parameters</label>
+            <input id="thNPlusOneMaxParams" type="number" min="1" max="100" />
+            <label class="tiny" for="thProjectionFactor">project at (× data)</label>
+            <input id="thProjectionFactor" type="number" min="2" max="1000" />
+          </div>
+          <p class="sub">
+            Saved recordings keep the raw commands, so changing these re-judges everything you
+            already have — nothing has to be recorded again.
+          </p>
+        </fieldset>
+
+        <fieldset id="updateBox" hidden>
+          <legend>Version</legend>
           <div class="updaterow">
             <span class="sub" id="updateVersion">—</span>
             <button type="button" id="updateCheck">Check for updates</button>
@@ -195,7 +376,7 @@
           </div>
           <p class="sub" id="updateMessage"></p>
           <ul class="sub" id="updateChanges" hidden></ul>
-        </div>
+        </fieldset>
 
         <menu>
           <button value="cancel">Cancel</button>
