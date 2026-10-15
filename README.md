@@ -3,8 +3,8 @@
 [![Download for Windows](https://img.shields.io/github/v/release/Emile-Hermans/db-call-overlay?label=Download%20for%20Windows&style=for-the-badge&color=5b46f0)](https://github.com/Emile-Hermans/db-call-overlay/releases/latest)
 
 **[⬇ Download the latest ClicktraceSetup.exe](https://github.com/Emile-Hermans/db-call-overlay/releases/latest)**
-— one file, no git, .NET or Node.js needed. Windows SmartScreen warns because it is not
-code-signed: click *More info → Run anyway*. [More about the setup](#without-git--the-setup-exe).
+— one file, no git, .NET or Node.js needed. **Your browser will warn you and hide the file —
+that is expected:** see [how to download it](#how-to-download-it--your-browser-will-warn-you).
 
 > ⚠️ **This project is fully vibecoded** — every line was written by an AI from conversational
 > prompts. See [the disclaimer](#disclaimer--this-is-fully-vibecoded) before you rely on it.
@@ -98,6 +98,35 @@ of any kind — that is not boilerplate here, it is the point.
 
 ## Install
 
+### How to download it — your browser will warn you
+
+The setup is new and not code-signed (it has no digital publisher signature), so Windows and
+your browser don't know it yet and hide it behind a warning. That is expected — here is how
+to get past it.
+
+**1. Keep the download.** After the download finishes, the browser says
+*"ClicktraceSetup.exe isn't commonly downloaded"* and the file seems to disappear.
+
+- **Edge:** in the Downloads panel, click **⋯** next to the file → **Keep**. In the
+  *"Make sure you trust…"* window, click the small **∨ arrow next to Delete** →
+  **Keep anyway**.
+- **Chrome:** in the Downloads panel, click the warning → **Download suspicious file**
+  (or **Keep**).
+
+**2. Run it.** Double-click the file in your Downloads folder. Windows shows
+*"Windows protected your PC"* → click **More info** → **Run anyway**.
+
+**3. Install.** Click **Install** — no administrator rights needed. Done.
+
+**No "Keep anyway" option?** Your company blocks it in the browser. Download it with
+PowerShell instead (Start menu → type *PowerShell* → paste this → Enter); it saves the latest
+version to your Downloads folder:
+
+```powershell
+$u = (Invoke-RestMethod https://api.github.com/repos/Emile-Hermans/db-call-overlay/releases/latest).assets | Where-Object name -like '*.exe' | ForEach-Object browser_download_url
+curl.exe -L -o "$env:USERPROFILE\Downloads\ClicktraceSetup.exe" $u
+```
+
 ### Without git — the setup exe
 
 Download **`ClicktraceSetup-<version>.exe`** and run it. That is all: it installs for your
@@ -105,8 +134,8 @@ Windows account only (no administrator rights), with its own .NET runtime and No
 nothing else has to be installed first. It adds Clicktrace to the Start menu and, if you
 want, the Desktop.
 
-- **It is not code-signed**, so Windows SmartScreen says *"Windows protected your PC"*. Click
-  **More info → Run anyway**.
+- **It is not code-signed**, so the browser and Windows warn about it — see
+  [how to download it](#how-to-download-it--your-browser-will-warn-you).
 - Installs to `%LOCALAPPDATA%\Programs\Clicktrace`. Recordings and settings live in
   `%LOCALAPPDATA%\DbCallOverlay` and survive updates and uninstalling.
 - **Update:** ⚙ Settings → **Check for updates** looks for a newer release on GitHub;

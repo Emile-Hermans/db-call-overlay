@@ -43,6 +43,25 @@ $exists = $LASTEXITCODE -eq 0
 $ErrorActionPreference = 'Stop'
 if ($exists) { throw "Release $tag already exists. Raise <Version> in desktop\DbCallOverlay.csproj first." }
 
+# Every release page explains the download, because every new unsigned version
+# starts with no SmartScreen reputation. Numbered, not "- " bullets: the app shows
+# "- " lines as the list of changes.
+$Notes = $Notes.TrimEnd() + @'
+
+
+## How to install
+
+Download **ClicktraceSetup-VERSION.exe** below. It is not code-signed yet, so your browser and Windows warn about it and hide it — that is expected:
+
+1. **Keep the download.** *Edge:* Downloads panel → **⋯** next to the file → **Keep**, then click the small **∨ arrow next to Delete** → **Keep anyway**. *Chrome:* click the warning → **Download suspicious file**.
+2. **Run it.** Windows says *"Windows protected your PC"* → **More info** → **Run anyway**.
+3. **Install.** No administrator rights needed. It includes its own .NET runtime and Node.js.
+
+No "Keep anyway" option because of a company policy? See [the README](https://github.com/Emile-Hermans/db-call-overlay#how-to-download-it--your-browser-will-warn-you) for a PowerShell command that downloads it without the browser.
+
+Already installed? ⚙ Settings → **Check for updates** → **Update now**.
+'@.Replace('VERSION', $version)
+
 & (Join-Path $root 'build-installer.ps1')
 $setup = Join-Path $root "dist\ClicktraceSetup-$version.exe"
 if (-not (Test-Path "$setup.sha256")) { throw "missing $setup.sha256" }
