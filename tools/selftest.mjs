@@ -86,7 +86,10 @@ push({
   actionLabel: L1,
 })
 
-const readOrder = 'SELECT [o].[Id], [o].[Reference], [o].[TenantId] FROM [Orders] AS [o] WHERE [o].[Id] = @__id_0'
+// The order comes back with its tenant's settings in the same query: one round-trip, two tables.
+const readOrder =
+  'SELECT [o].[Id], [o].[Reference], [o].[TenantId], [t].[Id], [t].[Currency], [t].[RoundingMode] ' +
+  'FROM [Orders] AS [o] LEFT JOIN [TenantSettings] AS [t] ON [t].[TenantId] = [o].[TenantId] WHERE [o].[Id] = @__id_0'
 
 sql({
   action: A1,

@@ -267,5 +267,77 @@ const alone = (calls, label) =>
   check(old.offMs === 0, 'a request without an end time claims nothing', `got ${old.offMs}`)
 }
 
+// ---------------------------------------------------------------------------
+// A joined read is one query: its tables, how each is joined and how many
+// columns each one supplies.
+{
+  const sources = (sql) => shred(sql, []).statements[0].sources
+  const brief = (xs) => xs.map((x) => `${x.table}:${x.how}:${x.star ? '*' : x.columns}`).join(' ')
+
+  check(
+    brief(sources('SELECT TOP(1) [o].[Id], [o].[Total], [c].[Id], [c].[Carrier], [c].[Status] FROM [Orders] AS [o] LEFT JOIN [Shipments] AS [c] ON [c].[OrderId] = [o].[Id] WHERE [o].[Id] = @p0')) ===
+      'Orders:from:2 Shipments:left join:3',
+    'a LEFT JOIN read reports both tables with their own column counts',
+  )
+
+  // EF's single-row include: the row is fetched in a derived table, then joined.
+  const derived = sources(
+    'SELECT [t].[Id], [t].[Ref], [s].[Id], [s].[Carrier], [l].[Id] FROM (SELECT TOP(1) [o].[Id], [s0].[Ref] FROM [Orders] AS [o] ' +
+      'INNER JOIN [Quotes] AS [s0] ON [s0].[Id] = [o].[QuoteId] WHERE [o].[Id] = @p0) AS [t] ' +
+      'LEFT JOIN [Shipments] AS [s] ON [s].[OrderId] = [t].[Id] INNER JOIN [OrderLines] AS [l] ON [l].[OrderId] = [t].[Id] ORDER BY [t].[Id]',
+  )
+  check(
+    brief(derived) === 'Orders:from:1 Quotes:inner join:1 Shipments:left join:2 OrderLines:inner join:1',
+    'a column read through a derived table is charged to the table that supplies it',
+    brief(derived),
+  )
+
+  check(
+    brief(sources('SELECT CASE WHEN EXISTS (SELECT 1 FROM [Orders] AS [o] WHERE [o].[Id] = @p) THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END')) ===
+      'Orders:subquery:null',
+    'an EXISTS check is a lookup, not a joined table',
+  )
+
+  const lookup = sources('SELECT [o].[Id], (SELECT COUNT(*) FROM [OrderLines] AS [l] WHERE [l].[OrderId] = [o].[Id]) AS [Lines] FROM [Orders] AS [o]')
+  check(brief(lookup) === 'OrderLines:subquery:null Orders:from:2', 'a scalar subquery in the select list stays a lookup', brief(lookup))
+  check(
+    shred('SELECT [o].[Id], (SELECT COUNT(*) FROM [OrderLines] AS [l] WHERE [l].[OrderId] = [o].[Id]) AS [Lines], [o].[Total] FROM [Orders] AS [o]', [])
+      .statements[0].width === 3,
+    'the column count does not stop at the FROM of a subquery in the select list',
+  )
+
+  check(
+    brief(sources('SELECT o.*, l.Qty FROM Orders o JOIN OrderLines l ON l.OrderId = o.Id')) === 'Orders:from:* OrderLines:inner join:1',
+    'alias.* and bare identifiers are understood',
+  )
+
+  // The group carries them, with `wide` set from the threshold.
+  const cols = (prefix, n) => Array.from({ length: n }, (_, i) => `[${prefix}].[C${i}]`).join(', ')
+  const joined = analyzeAction({
+    id: 'join',
+    label: 'Open order',
+    kind: 'click',
+    startedAt: 1000,
+    endedAt: 2000,
+    requests: [{ id: 'r1' }],
+    saveChanges: [],
+    calls: [
+      call({
+        req: 'r1',
+        sql: `SELECT TOP(1) ${cols('o', 40)}, ${cols('c', 3)} FROM [Orders] AS [o] LEFT JOIN [Shipments] AS [c] ON [c].[OrderId] = [o].[Id] WHERE [o].[Id] = @p0`,
+        params: [{ n: '@p0', v: 'o1' }],
+      }),
+    ],
+  })
+  const g = joined.groups[0]
+  check(joined.roundTrips === 1 && joined.groups.length === 1, 'a joined read stays one group and one round-trip')
+  check(
+    g.sources.map((x) => `${x.table}:${x.wide}`).join(' ') === 'Orders:true Shipments:false',
+    'only the table that brings back a whole row is marked wide',
+    JSON.stringify(g.sources),
+  )
+  check(/Orders 40, Shipments 3/.test(g.findings.find((f) => f.code === 'wide-select')?.detail ?? ''), 'the wide-read finding splits its columns per table')
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

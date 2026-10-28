@@ -14,7 +14,7 @@
     <Product>Clicktrace</Product>
     <AssemblyTitle>Clicktrace</AssemblyTitle>
     <Company>Clicktrace</Company>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <!-- The WebView2 package ships a WPF wrapper we never load; its WindowsBase

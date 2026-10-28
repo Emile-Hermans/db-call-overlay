@@ -536,6 +536,53 @@ function loopPill(g) {
   return `<span class="pill loop${l.confidence === 'exact' ? '' : ' lead'}" title="${esc(loopTitle(l))}">${l.confidence === 'exact' ? 'in loop' : 'loop?'}</span>`
 }
 
+/** Tables brought into the row source of this one statement - joins, applies, derived tables. */
+function joinedSources(g) {
+  return (g.sources ?? []).filter((x) => x.how !== 'subquery')
+}
+
+function sourceLine(x) {
+  const cols = x.columns == null ? '' : x.star ? ', all columns (*)' : `, ${x.columns} column${x.columns === 1 ? '' : 's'}`
+  return `${x.table} (${x.how}${cols}${x.wide ? ', whole row' : ''})`
+}
+
+function joinPill(g) {
+  const joined = joinedSources(g)
+  if (joined.length < 2) return ''
+  const n = joined.length - 1
+  const tip = `One query, one round-trip — reads ${joined.length} tables:\n${joined.map(sourceLine).join('\n')}`
+  return `<span class="pill join" title="${esc(tip)}">+${n} joined</span>`
+}
+
+/** What one query reads, table by table. Only shown when there is more than one table to tell apart. */
+function sourcesHtml(g) {
+  const all = g.sources ?? []
+  const joined = joinedSources(g)
+  if (all.length < 2 && !(joined.length === 1 && joined[0].wide)) return ''
+  const rows = all
+    .map((x) => {
+      const cols = x.columns == null ? '—' : x.star ? 'all (*)' : x.columns
+      const badge =
+        x.how === 'subquery'
+          ? '<span class="pill" title="Only checked inside a condition (EXISTS / IN / a scalar subquery) — no columns come back from it.">lookup</span>'
+          : x.wide
+            ? `<span class="pill wide" title="${x.star ? 'Selected with *' : 'At or above the wide-read threshold in Settings — most likely the whole entity is loaded'}">whole row</span>`
+            : ''
+      return `<tr><td class="t">${esc(x.table)}</td><td>${esc(x.how)}</td><td>${cols}</td><td>${badge}</td></tr>`
+    })
+    .join('')
+  const total = joined.reduce((s, x) => s + (x.columns ?? 0), 0)
+  return `
+    <div class="section-title">
+      Tables in this query
+      <span class="sub">one round-trip per execution · ${joined.length} table${joined.length === 1 ? '' : 's'}${g.op === 'SELECT' ? ` · ${total} column${total === 1 ? '' : 's'}` : ''}</span>
+    </div>
+    <table class="exec sources">
+      <thead><tr><th>table</th><th>how</th><th>columns</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`
+}
+
 function groupRow(actionId, g) {
   const key = `${actionId}::${g.id}`
   const isOpen = openGroups.has(key)
@@ -556,7 +603,7 @@ function groupRow(actionId, g) {
         <span class="chev">&#9656;</span>
         <span class="op op-${esc(g.op)}">${esc(g.op)}</span>
         <span class="tbl" title="${esc(g.table ?? 'No table name could be read from this statement — see the SQL below')}">
-          ${esc(g.table ?? '(no table parsed)')}
+          <span class="tname">${esc(g.table ?? '(no table parsed)')}</span>${joinPill(g)}
         </span>
         <span class="count ${g.avoidable ? 'bad' : g.avoidableAcrossRequests ? 'soft' : ''}">&times;${g.count}</span>
         <span class="sub">${uniqueText}</span>
@@ -654,6 +701,7 @@ function groupBody(g) {
   return `
     ${g.findings.map(findingHtml).join('')}
     ${pathsHtml}
+    ${sourcesHtml(g)}
     <div class="section-title">SQL</div>
     <pre class="sql">${esc(g.sampleSql)}</pre>
     <div class="section-title">
@@ -1053,6 +1101,7 @@ function callAsText(detail, g) {
     `- **Where:** ${site}`,
     `- **Endpoint:** ${g.endpoints.join(', ') || '—'}`,
     `- **App:** ${g.apps.join(', ') || '—'}`,
+    ...((g.sources ?? []).length > 1 ? [`- **Tables (one query):** ${g.sources.map(sourceLine).join(', ')}`] : []),
     `- **Executions:** ${g.count} statement${g.count === 1 ? '' : 's'} in ${g.roundTrips} round-trip${g.roundTrips === 1 ? '' : 's'}` +
       (g.op === 'SELECT' ? `, ${g.distinctParams} distinct parameter set${g.distinctParams === 1 ? '' : 's'}` : `, ${g.distinctRows} distinct row${g.distinctRows === 1 ? '' : 's'}`),
   ]

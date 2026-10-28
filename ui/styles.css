@@ -1368,11 +1368,27 @@ svg.i {
 }
 
 .tbl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   font-family: var(--mono);
   font-size: 12px;
   white-space: nowrap;
+}
+
+.tbl .tname {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* A joined read is still one query - the pill must survive a truncated name. */
+.tbl .pill.join {
+  flex-shrink: 0;
+  font-family: var(--font);
+  background: var(--blue-soft);
+  color: var(--blue);
 }
 
 .count {
@@ -1409,6 +1425,15 @@ svg.i {
   white-space: nowrap;
   background: var(--surface-3);
   color: var(--ink-2);
+}
+
+.pill.wide {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+table.exec.sources td.t {
+  font-family: var(--mono);
 }
 
 .pill.dupe {

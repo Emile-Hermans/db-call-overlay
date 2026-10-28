@@ -312,6 +312,18 @@ function byRequest(units) {
   return [...groups.values()]
 }
 
+/**
+ * The tables one statement reads, each marked `wide` when it brings back at least
+ * the wide-read threshold of columns - most likely the whole entity. A joined
+ * read is still one round-trip; this is what shows how much it carries.
+ */
+function sourcesOf(stmt, cfg) {
+  return (stmt.sources ?? []).map((x) => ({
+    ...x,
+    wide: x.star || (x.columns ?? 0) >= cfg.wideCols,
+  }))
+}
+
 function analyzeGroup(g, cfg) {
   const findings = []
 
@@ -444,12 +456,17 @@ function analyzeGroup(g, cfg) {
     }
 
     if (g.sample.width >= cfg.wideCols) {
+      const joined = sourcesOf(g.sample, cfg).filter((x) => x.columns != null)
+      const split =
+        joined.length > 1
+          ? ` One query, ${joined.length} tables: ${joined.map((x) => `${x.table} ${x.star ? 'all' : x.columns}`).join(', ')}.`
+          : ''
       findings.push({
         code: 'wide-select',
         level: 'low',
         bucket: null,
         title: `Reads ${g.sample.width} columns`,
-        detail: 'The whole entity is materialised even if only a few fields are used.',
+        detail: 'The whole entity is materialised even if only a few fields are used.' + split,
         fix: 'Project into a DTO with .Select(...) and fetch only the columns you actually read.',
         avoidable: 0,
       })
@@ -591,6 +608,7 @@ function analyzeGroup(g, cfg) {
     units: undefined,
     sample: undefined,
     width: g.sample.width,
+    sources: sourcesOf(g.sample, cfg),
     hasWhere: g.sample.hasWhere,
     callPaths: paths,
     // What kind of database work this was, and how its count grows with the data.
