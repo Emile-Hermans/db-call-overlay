@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Builds the setup and publishes it as a GitHub release, which is what the
     app's "Check for updates" looks for in an installed copy.
@@ -68,10 +68,18 @@ Already installed? ⚙ Settings → **Check for updates** → **Update now**.
 $setup = Join-Path $root "dist\ClicktraceSetup-$version.exe"
 if (-not (Test-Path "$setup.sha256")) { throw "missing $setup.sha256" }
 
-$args = @('release', 'create', $tag, $setup, "$setup.sha256", '--target', $head, '--title', "Clicktrace $version", '--notes', $Notes)
+# Through a file: Windows PowerShell passes a double quote inside an argument to a
+# native program unescaped, so gh would split the notes and read words as assets.
+$notesFile = Join-Path ([IO.Path]::GetTempPath()) "clicktrace-notes-$version.md"
+[IO.File]::WriteAllText($notesFile, $Notes, (New-Object Text.UTF8Encoding $false))
+$args = @('release', 'create', $tag, $setup, "$setup.sha256", '--target', $head, '--title', "Clicktrace $version", '--notes-file', $notesFile)
 if ($Draft) { $args += '--draft' }
-& gh @args
-if ($LASTEXITCODE -ne 0) { throw 'gh release create failed' }
+try {
+    & gh @args
+    if ($LASTEXITCODE -ne 0) { throw 'gh release create failed' }
+} finally {
+    Remove-Item $notesFile -ErrorAction SilentlyContinue
+}
 
 Write-Host ''
 Write-Host "  Published $tag. Installed copies offer it under Settings -> Check for updates." -ForegroundColor Green
